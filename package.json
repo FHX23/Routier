@@ -1,0 +1,57 @@
+{
+  "name": "routier",
+  "version": "0.1.0",
+  "description": "Analizador de rutas para Next.js y GraphQL que exporta a Postman e Insomnia",
+  "main": "./dist/index.js",
+  "type": "module",
+  "bin": {
+    "routier": "./dist/index.js"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "pnpm run clean && tsc",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "prepack": "pnpm run build"
+  },
+  "keywords": [
+    "cli",
+    "nextjs",
+    "graphql",
+    "postman",
+    "insomnia",
+    "api",
+    "routes",
+    "scanning"
+  ],
+  "author": "",
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/routier"
+  },
+  "bugs": {
+    "url": "https://github.com/yourusername/routier/issues"
+  },
+  "homepage": "https://github.com/yourusername/routier#readme",
+  "files": [
+    "dist",
+    "docs",
+    "README.md",
+    "LICENSE",
+    "package.json"
+  ],
+  "packageManager": "pnpm@10.28.2",
+  "dependencies": {
+    "@clack/prompts": "^1.5.0",
+    "commander": "^15.0.0",
+    "fast-glob": "^3.3.3",
+    "graphql": "^17.0.1",
+    "picocolors": "^1.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3"
+  }
+}
