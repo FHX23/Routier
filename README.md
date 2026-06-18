@@ -3,7 +3,7 @@
 **Routier** es una CLI que analiza proyectos **Next.js** (App Router y Pages Router), detecta endpoints REST y operaciones GraphQL, y genera colecciones importables en **Postman** e **Insomnia**.
 
 ![npm version](https://img.shields.io/npm/v/routier?style=flat-square)
-![license](https://img.shields.io/npm/l/routier?style=flat-square)
+![license](https://img.shields.io/badge/license-ISC-blue?style=flat-square)
 
 ## Instalación
 
@@ -139,8 +139,8 @@ Las contribuciones son bienvenidas. Por favor:
 
 ## Soporte
 
-Para reportar bugs o solicitar features, abre un [issue en GitHub](https://github.com/yourusername/routier/issues).
+Para reportar bugs o solicitar features, abre un [issue en GitHub](https://github.com/FHX23/Routier/issues).
 
 ---
 
-**Made with ❤️ for developers**
+**Made with ❤️ by FHX23**
