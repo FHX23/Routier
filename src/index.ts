@@ -9,14 +9,23 @@ const program = new Command();
 
 program
   .name('routier')
-  .description('Analiza proyectos Next.js y exporta colecciones para Postman e Insomnia')
-  .version('1.0.0');
+  .description('CLI para analizar Next.js, GraphQL y generar colecciones para Postman e Insomnia\n\nUso rápido:\n  routier scan --cwd ./myproject\n  routier export --cwd ./myproject --format all --group-by type')
+  .version('0.1.0')
+  .addHelpCommand('help [command]', 'Muestra ayuda para un comando')
+  .on('--help', () => {
+    console.log('\nEjemplos:\n');
+    console.log('  $ routier scan --cwd .');
+    console.log('  $ routier export --cwd . --format postman --group-by type --sort alpha');
+    console.log('  $ routier export --cwd . --format insomnia --out ./exports');
+    console.log('\nMás información: https://github.com/yourusername/routier');
+  });
 
 program
   .command('scan')
-  .description('Escanea el proyecto en busca de rutas y operaciones GraphQL')
-  .option('--cwd <path>', 'Directorio del proyecto a escanear', '.')
-  .option('--graphql-schema <path>', 'Ruta explicita a schema GraphQL')
+  .description('Escanea el proyecto en busca de rutas REST y operaciones GraphQL')
+  .option('--cwd <path>', 'Directorio del proyecto (default: .)', '.')
+  .option('--graphql-schema <path>', 'Ruta explícita al schema GraphQL (.graphql o .gql)')
+  .addHelpText('after', '\nEjemplos:\n  $ routier scan\n  $ routier scan --cwd ./src\n  $ routier scan --graphql-schema ./schema.graphql')
   .action(async (options: { cwd: string; graphqlSchema?: string }) => {
     try {
       const result = await scanProject({ cwd: options.cwd, graphqlSchema: options.graphqlSchema });
@@ -43,14 +52,15 @@ program
 program
   .command('export')
   .description('Genera archivos importables en Postman e Insomnia')
-  .option('--cwd <path>', 'Directorio del proyecto a escanear', '.')
-  .option('--framework <framework>', 'Framework a escanear', 'next')
-  .option('--format <format>', 'postman, insomnia o all', 'all')
-  .option('--group-by <mode>', 'type, method, path o none', 'type')
-  .option('--sort <mode>', 'alpha o none', 'alpha')
-  .option('--out <path>', 'Directorio de salida', './routier-exports')
-  .option('--base-url <url>', 'Base URL para las requests', '{{baseUrl}}')
-  .option('--graphql-schema <path>', 'Ruta explicita a schema GraphQL')
+  .option('--cwd <path>', 'Directorio del proyecto (default: .)', '.')
+  .option('--framework <framework>', 'Framework soportado: next (default: next)', 'next')
+  .option('--format <format>', 'Formatos: postman | insomnia | all (default: all)', 'all')
+  .option('--group-by <mode>', 'Agrupar por: type | method | path | none (default: type)', 'type')
+  .option('--sort <mode>', 'Ordenar por: alpha | none (default: alpha)', 'alpha')
+  .option('--out <path>', 'Directorio de salida (default: ./routier-exports)', './routier-exports')
+  .option('--base-url <url>', 'Base URL para requests (default: {{baseUrl}})', '{{baseUrl}}')
+  .option('--graphql-schema <path>', 'Ruta explícita al schema GraphQL')
+  .addHelpText('after', '\nEjemplos:\n  $ routier export\n  $ routier export --format postman --group-by type --sort alpha\n  $ routier export --cwd ./app --out ./collections --base-url http://localhost:3000\n  $ routier export --format insomnia --group-by none')
   .action(async (options: {
     cwd: string;
     framework: string;
