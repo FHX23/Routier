@@ -1,6 +1,5 @@
 # Dependencies
 node_modules/
-pnpm-lock.yaml
 package-lock.json
 yarn.lock
 
@@ -43,3 +42,9 @@ Thumbs.db
 # Cache
 .cache/
 .eslintcache
+
+# Internal documentation and fixtures
+SPECIFICATION.md
+fixtures/
+docs/MVP_PLAN.md
+docs/IMPLEMENTATION_STATUS.md
