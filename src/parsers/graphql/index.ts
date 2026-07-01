@@ -24,13 +24,21 @@ export async function scanGraphQLSchema(options: GraphQLScanOptions): Promise<Gr
   const candidates = await findSchemaCandidates(options, warnings);
   const operations: GraphQLOperation[] = [];
 
+  const parsedCandidates: { sourceFile: string; definitions: readonly DefinitionNode[] }[] = [];
+  const globalDefinitions: DefinitionNode[] = [];
+
   for (const candidate of candidates) {
     try {
       const document = parse(candidate.sdl);
-      operations.push(...extractOperations(document.definitions, candidate.sourceFile));
+      parsedCandidates.push({ sourceFile: candidate.sourceFile, definitions: document.definitions });
+      globalDefinitions.push(...document.definitions);
     } catch (error) {
       warnings.push(`No se pudo parsear GraphQL en ${candidate.sourceFile}: ${String(error)}`);
     }
+  }
+
+  for (const candidate of parsedCandidates) {
+    operations.push(...extractOperations(candidate.definitions, globalDefinitions, candidate.sourceFile));
   }
 
   return { operations, warnings };
@@ -42,26 +50,27 @@ async function findSchemaCandidates(options: GraphQLScanOptions, warnings: strin
     return [{ sourceFile: path.relative(options.cwd, absolutePath).replace(/\\/g, '/'), sdl: await readFile(absolutePath, 'utf-8') }];
   }
 
-  const schemaFiles = await fg(['**/*.{graphql,gql}'], {
-    cwd: options.cwd,
-    absolute: true,
-    ignore: ['**/node_modules/**', '**/.next/**', '**/dist/**', '**/routier-exports/**'],
-  });
-
-  if (schemaFiles.length > 0) {
-    return Promise.all(schemaFiles.map(async (file) => ({
-      sourceFile: path.relative(options.cwd, file).replace(/\\/g, '/'),
-      sdl: await readFile(file, 'utf-8'),
-    })));
-  }
-
-  const tsFiles = await fg(['**/*.{ts,tsx,js,jsx}'], {
-    cwd: options.cwd,
-    absolute: true,
-    ignore: ['**/node_modules/**', '**/.next/**', '**/dist/**', '**/routier-exports/**'],
-  });
+  const [schemaFiles, tsFiles] = await Promise.all([
+    fg(['**/*.{graphql,gql}'], {
+      cwd: options.cwd,
+      absolute: true,
+      ignore: ['**/node_modules/**', '**/.next/**', '**/dist/**', '**/routier-exports/**'],
+    }),
+    fg(['**/*.{ts,tsx,js,jsx}'], {
+      cwd: options.cwd,
+      absolute: true,
+      ignore: ['**/node_modules/**', '**/.next/**', '**/dist/**', '**/routier-exports/**'],
+    })
+  ]);
 
   const candidates: SchemaCandidate[] = [];
+
+  for (const file of schemaFiles) {
+    candidates.push({
+      sourceFile: path.relative(options.cwd, file).replace(/\\/g, '/'),
+      sdl: await readFile(file, 'utf-8'),
+    });
+  }
 
   for (const file of tsFiles) {
     const content = await readFile(file, 'utf-8');
@@ -95,20 +104,25 @@ function extractStaticSdlFromCode(content: string, sourceFile: string, warnings:
   return schemas;
 }
 
-function extractOperations(definitions: readonly DefinitionNode[], sourceFile: string): GraphQLOperation[] {
+function extractOperations(
+  definitions: readonly DefinitionNode[],
+  globalDefinitions: readonly DefinitionNode[],
+  sourceFile: string,
+): GraphQLOperation[] {
   const objectTypes = definitions.filter((definition): definition is ObjectTypeDefinitionNode => definition.kind === 'ObjectTypeDefinition');
   const queryType = objectTypes.find((type) => type.name.value === 'Query');
   const mutationType = objectTypes.find((type) => type.name.value === 'Mutation');
 
   return [
-    ...fieldsToOperations('query', queryType?.fields ?? [], sourceFile),
-    ...fieldsToOperations('mutation', mutationType?.fields ?? [], sourceFile),
+    ...fieldsToOperations('query', queryType?.fields ?? [], globalDefinitions, sourceFile),
+    ...fieldsToOperations('mutation', mutationType?.fields ?? [], globalDefinitions, sourceFile),
   ];
 }
 
 function fieldsToOperations(
   operationType: 'query' | 'mutation',
   fields: readonly FieldDefinitionNode[],
+  globalDefinitions: readonly DefinitionNode[],
   sourceFile: string,
 ): GraphQLOperation[] {
   return fields.map((field) => {
@@ -124,7 +138,40 @@ function fieldsToOperations(
     const fieldArguments = args.length > 0
       ? `(${args.map((arg) => `${arg.name}: $${arg.name}`).join(', ')})`
       : '';
-    const selection = isScalarType(typeToString(field.type)) ? '' : ' { id }';
+    
+    const returnTypeName = typeToString(field.type).replace(/[!\[\]]/g, '');
+    const isScalar = isScalarType(returnTypeName) ||
+      globalDefinitions.some((def) => def.kind === 'ScalarTypeDefinition' && def.name.value === returnTypeName);
+
+    let selection = '';
+    if (!isScalar) {
+      const objType = globalDefinitions.find(
+        (def): def is ObjectTypeDefinitionNode =>
+          def.kind === 'ObjectTypeDefinition' && def.name.value === returnTypeName
+      );
+
+      if (objType) {
+        const hasId = objType.fields?.some((f) => f.name.value === 'id');
+        if (hasId) {
+          selection = ' { id }';
+        } else {
+          const firstScalar = objType.fields?.find((f) => {
+            const fieldTypeName = typeToString(f.type).replace(/[!\[\]]/g, '');
+            return isScalarType(fieldTypeName) ||
+              globalDefinitions.some((def) => def.kind === 'ScalarTypeDefinition' && def.name.value === fieldTypeName);
+          });
+
+          if (firstScalar) {
+            selection = ` { ${firstScalar.name.value} }`;
+          } else if (objType.fields && objType.fields.length > 0) {
+            selection = ` { ${objType.fields[0].name.value} }`;
+          }
+        }
+      } else {
+        selection = ' { id }';
+      }
+    }
+
     const query = `${operationType} ${field.name.value}${variableDefinitions} { ${field.name.value}${fieldArguments}${selection} }`;
 
     return {

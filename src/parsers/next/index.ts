@@ -26,11 +26,19 @@ function cleanNextPath(rawPath: string): string {
 async function extractAppRouterMethods(filePath: string): Promise<HttpMethod[]> {
   try {
     const content = await readFile(filePath, 'utf-8');
+    
+    // Limpiar comentarios de bloque y de línea para evitar falsos positivos
+    const cleanContent = content
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/.*$/gm, '');
+
     const detectedMethods: HttpMethod[] = [];
 
     for (const method of STANDARD_METHODS) {
-      const regex = new RegExp(`export\\s+(async\\s+)?(function|const)\\s+${method}\\b`);
-      if (regex.test(content)) {
+      const inlineRegex = new RegExp(`export\\s+(async\\s+)?(function|const|let|var)\\s+${method}\\b`);
+      const blockRegex = new RegExp(`export\\s*\\{[^}]*\\b${method}\\b[^}]*\\}`);
+      
+      if (inlineRegex.test(cleanContent) || blockRegex.test(cleanContent)) {
         detectedMethods.push(method);
       }
     }

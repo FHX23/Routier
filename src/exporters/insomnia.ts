@@ -20,6 +20,9 @@ export function generateInsomniaExport(scan: ScanResult, options: ExportOptions)
   const environmentId = 'env_routier';
   const groupBy = options.groupBy ?? 'type';
   const sort = options.sort ?? 'alpha';
+  
+  const generatedIds = new Set<string>([workspaceId, environmentId]);
+
   const resources = [
     {
       _id: workspaceId,
@@ -35,7 +38,7 @@ export function generateInsomniaExport(scan: ScanResult, options: ExportOptions)
       name: 'Base Environment',
       data: { baseUrl: options.baseUrl },
     },
-    ...buildResources(scan, workspaceId, groupBy, sort),
+    ...buildResources(scan, workspaceId, groupBy, sort, generatedIds),
   ];
 
   return {
@@ -47,7 +50,7 @@ export function generateInsomniaExport(scan: ScanResult, options: ExportOptions)
   };
 }
 
-function buildResources(scan: ScanResult, workspaceId: string, groupBy: GroupBy, sort: SortMode) {
+function buildResources(scan: ScanResult, workspaceId: string, groupBy: GroupBy, sort: SortMode, generatedIds: Set<string>) {
   const restRequests = scan.endpoints
     .filter((endpoint) => endpoint.fileType !== 'graphql')
     .flatMap((endpoint) => endpoint.methods.map((method) => ({ endpoint, method })));
@@ -59,17 +62,17 @@ function buildResources(scan: ScanResult, workspaceId: string, groupBy: GroupBy,
   if (groupBy === 'none') {
     return [
       ...sortRestRequests([...restRequests, ...graphqlEndpointRequests], sort)
-        .map((request) => restToResource(request, workspaceId)),
-      ...graphqlOperations.map((operation) => graphqlToResource(operation, workspaceId)),
+        .map((request) => restToResource(request, workspaceId, generatedIds)),
+      ...graphqlOperations.map((operation) => graphqlToResource(operation, workspaceId, generatedIds)),
     ];
   }
 
   if (groupBy === 'method') {
-    return methodResources([...restRequests, ...graphqlEndpointRequests], workspaceId, sort);
+    return methodResources([...restRequests, ...graphqlEndpointRequests], workspaceId, sort, generatedIds);
   }
 
   if (groupBy === 'path') {
-    return pathResources([...restRequests, ...graphqlEndpointRequests], graphqlOperations, workspaceId, sort);
+    return pathResources([...restRequests, ...graphqlEndpointRequests], graphqlOperations, workspaceId, sort, generatedIds);
   }
 
   const resources: unknown[] = [];
@@ -77,47 +80,52 @@ function buildResources(scan: ScanResult, workspaceId: string, groupBy: GroupBy,
   const graphqlFolderId = 'fld_graphql';
 
   if (restRequests.length > 0) {
+    generatedIds.add(restFolderId);
     resources.push(folder(restFolderId, workspaceId, 'REST'));
-    resources.push(...methodResources(restRequests, restFolderId, sort));
+    resources.push(...methodResources(restRequests, restFolderId, sort, generatedIds));
   }
 
   if (graphqlOperations.length > 0 || graphqlEndpointRequests.length > 0) {
+    generatedIds.add(graphqlFolderId);
     resources.push(folder(graphqlFolderId, workspaceId, 'GraphQL'));
 
     const queryOperations = graphqlOperations.filter((operation) => operation.type === 'query');
     if (queryOperations.length > 0) {
       const queriesFolderId = 'fld_graphql_queries';
+      generatedIds.add(queriesFolderId);
       resources.push(folder(queriesFolderId, graphqlFolderId, 'Queries'));
-      resources.push(...queryOperations.map((operation) => graphqlToResource(operation, queriesFolderId)));
+      resources.push(...queryOperations.map((operation) => graphqlToResource(operation, queriesFolderId, generatedIds)));
     }
 
     const mutationOperations = graphqlOperations.filter((operation) => operation.type === 'mutation');
     if (mutationOperations.length > 0) {
       const mutationsFolderId = 'fld_graphql_mutations';
+      generatedIds.add(mutationsFolderId);
       resources.push(folder(mutationsFolderId, graphqlFolderId, 'Mutations'));
-      resources.push(...mutationOperations.map((operation) => graphqlToResource(operation, mutationsFolderId)));
+      resources.push(...mutationOperations.map((operation) => graphqlToResource(operation, mutationsFolderId, generatedIds)));
     }
 
     if (graphqlEndpointRequests.length > 0) {
       const endpointFolderId = 'fld_graphql_endpoint';
+      generatedIds.add(endpointFolderId);
       resources.push(folder(endpointFolderId, graphqlFolderId, 'Endpoint'));
-      resources.push(...sortRestRequests(graphqlEndpointRequests, sort).map((request) => restToResource(request, endpointFolderId)));
+      resources.push(...sortRestRequests(graphqlEndpointRequests, sort).map((request) => restToResource(request, endpointFolderId, generatedIds)));
     }
   }
 
   return resources;
 }
 
-function methodResources(requests: RestRequest[], parentId: string, sort: SortMode) {
+function methodResources(requests: RestRequest[], parentId: string, sort: SortMode, generatedIds: Set<string>) {
   const resources: unknown[] = [];
 
   for (const method of METHOD_ORDER) {
     const methodRequests = sortRestRequests(requests.filter((request) => request.method === method), sort);
     if (methodRequests.length === 0) continue;
 
-    const folderId = resourceId(`fld_${parentId}_${method}`);
+    const folderId = resourceId(`fld_${parentId}_${method}`, generatedIds);
     resources.push(folder(folderId, parentId, method));
-    resources.push(...methodRequests.map((request) => restToResource(request, folderId)));
+    resources.push(...methodRequests.map((request) => restToResource(request, folderId, generatedIds)));
   }
 
   return resources;
@@ -128,6 +136,7 @@ function pathResources(
   graphqlOperations: GraphQLOperation[],
   workspaceId: string,
   sort: SortMode,
+  generatedIds: Set<string>,
 ) {
   const resources: unknown[] = [];
   const grouped = new Map<string, RestRequest[]>();
@@ -138,15 +147,16 @@ function pathResources(
   }
 
   for (const [segment, segmentRequests] of [...grouped.entries()].sort(([a], [b]) => a.localeCompare(b))) {
-    const folderId = resourceId(`fld_path_${segment}`);
+    const folderId = resourceId(`fld_path_${segment}`, generatedIds);
     resources.push(folder(folderId, workspaceId, segment));
-    resources.push(...sortRestRequests(segmentRequests, sort).map((request) => restToResource(request, folderId)));
+    resources.push(...sortRestRequests(segmentRequests, sort).map((request) => restToResource(request, folderId, generatedIds)));
   }
 
   if (graphqlOperations.length > 0) {
     const folderId = 'fld_path_graphql_operations';
+    generatedIds.add(folderId);
     resources.push(folder(folderId, workspaceId, 'graphql-operations'));
-    resources.push(...sortGraphqlOperations(graphqlOperations, sort).map((operation) => graphqlToResource(operation, folderId)));
+    resources.push(...sortGraphqlOperations(graphqlOperations, sort).map((operation) => graphqlToResource(operation, folderId, generatedIds)));
   }
 
   return resources;
@@ -161,9 +171,9 @@ function folder(id: string, parentId: string, name: string) {
   };
 }
 
-function restToResource(request: RestRequest, parentId: string) {
+function restToResource(request: RestRequest, parentId: string, generatedIds: Set<string>) {
   return {
-    _id: resourceId(`req_${parentId}_${request.method}_${request.endpoint.path}`),
+    _id: resourceId(`req_${parentId}_${request.method}_${request.endpoint.path}`, generatedIds),
     _type: 'request',
     parentId,
     name: `${request.method} ${request.endpoint.path}`,
@@ -174,9 +184,9 @@ function restToResource(request: RestRequest, parentId: string) {
   };
 }
 
-function graphqlToResource(operation: GraphQLOperation, parentId: string) {
+function graphqlToResource(operation: GraphQLOperation, parentId: string, generatedIds: Set<string>) {
   return {
-    _id: resourceId(`req_${parentId}_graphql_${operation.type}_${operation.name}`),
+    _id: resourceId(`req_${parentId}_graphql_${operation.type}_${operation.name}`, generatedIds),
     _type: 'request',
     parentId,
     name: operation.name,
@@ -200,6 +210,14 @@ function sortGraphqlOperations(operations: GraphQLOperation[], sort: SortMode): 
   return [...operations].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function resourceId(value: string): string {
-  return value.replace(/[^a-zA-Z0-9_]+/g, '_').replace(/^_+|_+$/g, '').toLowerCase();
+function resourceId(value: string, generatedIds: Set<string>): string {
+  const baseId = value.replace(/[^a-zA-Z0-9_]+/g, '_').replace(/^_+|_+$/g, '').toLowerCase();
+  let uniqueId = baseId;
+  let counter = 1;
+  while (generatedIds.has(uniqueId)) {
+    uniqueId = `${baseId}_${counter}`;
+    counter++;
+  }
+  generatedIds.add(uniqueId);
+  return uniqueId;
 }

@@ -44,7 +44,9 @@ Thumbs.db
 .eslintcache
 
 # Internal documentation and fixtures
+/roadmap_local.md
 SPECIFICATION.md
 fixtures/
 docs/MVP_PLAN.md
 docs/IMPLEMENTATION_STATUS.md
+

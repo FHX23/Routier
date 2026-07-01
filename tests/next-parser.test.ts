@@ -14,6 +14,7 @@ test('scanNextRoutes detects app and pages router endpoints', async () => {
   assert.deepEqual(byPath.get('/api/users/:id')?.methods, ['GET', 'DELETE']);
   assert.deepEqual(byPath.get('/api/files/:slug')?.methods, ['POST']);
   assert.deepEqual(byPath.get('/api/docs/:path')?.methods, ['GET']);
+  assert.deepEqual(byPath.get('/api/comments')?.methods, ['GET', 'POST']);
   assert.deepEqual(byPath.get('/api/legacy/:id')?.methods, ['GET', 'POST']);
   assert.equal(byPath.get('/api/legacy/:id')?.router, 'pages');
 });
