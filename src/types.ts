@@ -8,6 +8,7 @@ export interface Endpoint {
   fileType: 'rest' | 'graphql';
   sourceFile: string;
   router: RouterType;
+  methodsMetadata?: Record<HttpMethod, { headers?: string[]; body?: string }>;
 }
 
 export interface GraphQLArgument {
