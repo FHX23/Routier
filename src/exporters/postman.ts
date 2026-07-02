@@ -28,13 +28,18 @@ export function generatePostmanCollection(openapi: any, options: ExportOptions) 
   const groupBy = options.groupBy ?? 'type';
   const sort = options.sort ?? 'alpha';
 
+  const rawBaseUrl = openapi.servers?.[0]?.url ?? options.baseUrl;
+  const baseUrl = (rawBaseUrl === '{baseUrl}' || rawBaseUrl === '{{baseUrl}}')
+    ? '{{baseUrl}}'
+    : rawBaseUrl;
+
   return {
     info: {
       name,
       schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json',
     },
-    item: buildItems(scan, { ...options, groupBy, sort }),
-    variable: [{ key: 'baseUrl', value: options.baseUrl }],
+    item: buildItems(scan, { ...options, baseUrl, groupBy, sort }),
+    variable: [{ key: 'baseUrl', value: baseUrl === '{{baseUrl}}' ? 'http://localhost:3000' : baseUrl }],
   };
 }
 

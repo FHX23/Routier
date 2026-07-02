@@ -23,6 +23,10 @@ export function generateInsomniaExport(openapi: any, options: ExportOptions) {
   const groupBy = options.groupBy ?? 'type';
   const sort = options.sort ?? 'alpha';
   
+  const rawBaseUrl = openapi.servers?.[0]?.url ?? options.baseUrl;
+  const isVariable = rawBaseUrl === '{baseUrl}' || rawBaseUrl === '{{baseUrl}}';
+  const environmentBaseUrl = isVariable ? 'http://localhost:3000' : rawBaseUrl;
+
   const generatedIds = new Set<string>([workspaceId, environmentId]);
 
   const resources = [
@@ -38,7 +42,7 @@ export function generateInsomniaExport(openapi: any, options: ExportOptions) {
       _type: 'environment',
       parentId: workspaceId,
       name: 'Base Environment',
-      data: { baseUrl: options.baseUrl },
+      data: { baseUrl: environmentBaseUrl },
     },
     ...buildResources(scan, workspaceId, groupBy, sort, generatedIds),
   ];

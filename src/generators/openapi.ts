@@ -78,6 +78,8 @@ export function generateOpenAPI(scan: ScanResult, options: { baseUrl: string }) 
     }
   }
 
+  const isVariable = options.baseUrl.includes('{{') || options.baseUrl.includes('{');
+
   return {
     openapi: '3.0.3',
     info: {
@@ -87,7 +89,15 @@ export function generateOpenAPI(scan: ScanResult, options: { baseUrl: string }) 
     },
     servers: [
       {
-        url: options.baseUrl,
+        url: isVariable ? '{baseUrl}' : options.baseUrl,
+        ...(isVariable ? {
+          variables: {
+            baseUrl: {
+              default: 'http://localhost:3000',
+              description: 'URL base del servidor',
+            },
+          },
+        } : {}),
       },
     ],
     paths,

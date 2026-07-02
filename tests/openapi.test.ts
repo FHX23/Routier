@@ -95,3 +95,10 @@ test('parseOpenAPI performs engineering roundtrip to restore standard ScanResult
   assert.equal(healthOp?.type, 'query');
   assert.equal(healthOp?.body.query, 'query health { health }');
 });
+
+test('generateOpenAPI exports strict variables when baseUrl is variable template', () => {
+  const openapi = generateOpenAPI(scan, { baseUrl: '{{baseUrl}}' });
+  
+  assert.equal(openapi.servers[0].url, '{baseUrl}');
+  assert.equal(openapi.servers[0].variables?.baseUrl.default, 'http://localhost:3000');
+});

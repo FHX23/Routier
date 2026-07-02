@@ -26,8 +26,9 @@ program
   .description('Escanea el proyecto en busca de rutas REST y operaciones GraphQL')
   .option('--cwd <path>', 'Directorio del proyecto')
   .option('--graphql-schema <path>', 'Ruta explícita al schema GraphQL (.graphql o .gql)')
-  .addHelpText('after', '\nEjemplos:\n  $ routier scan\n  $ routier scan --cwd ./src\n  $ routier scan --graphql-schema ./schema.graphql')
-  .action(async (options: { cwd?: string; graphqlSchema?: string }) => {
+  .option('--exclude <dirs...>', 'Directorios a excluir del escaneo (ej. **/mocks/**)')
+  .addHelpText('after', '\nEjemplos:\n  $ routier scan\n  $ routier scan --cwd ./src\n  $ routier scan --graphql-schema ./schema.graphql\n  $ routier scan --exclude **/mocks/** **/temp/**')
+  .action(async (options: { cwd?: string; graphqlSchema?: string; exclude?: string[] }) => {
     try {
       const cwd = options.cwd ?? '.';
       const config = await resolveConfig(cwd, options);
@@ -68,7 +69,8 @@ program
   .option('--out <path>', 'Directorio de salida')
   .option('--base-url <url>', 'Base URL para requests')
   .option('--graphql-schema <path>', 'Ruta explícita al schema GraphQL')
-  .addHelpText('after', '\nEjemplos:\n  $ routier export\n  $ routier export --format postman --group-by type --sort alpha\n  $ routier export --cwd ./app --out ./collections --base-url http://localhost:3000\n  $ routier export --format insomnia --group-by none')
+  .option('--exclude <dirs...>', 'Directorios a excluir del escaneo (ej. **/mocks/**)')
+  .addHelpText('after', '\nEjemplos:\n  $ routier export\n  $ routier export --format postman --group-by type --sort alpha\n  $ routier export --cwd ./app --out ./collections --base-url http://localhost:3000\n  $ routier export --format insomnia --group-by none\n  $ routier export --exclude **/mocks/**')
   .action(async (options: {
     cwd?: string;
     framework?: string;
@@ -78,6 +80,7 @@ program
     out?: string;
     baseUrl?: string;
     graphqlSchema?: string;
+    exclude?: string[];
   }) => {
     try {
       const cwd = options.cwd ?? '.';

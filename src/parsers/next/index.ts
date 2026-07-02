@@ -52,6 +52,34 @@ async function extractAppRouterMethods(filePath: string): Promise<HttpMethod[]> 
   }
 }
 
+async function extractPagesRouterMethods(filePath: string): Promise<HttpMethod[]> {
+  try {
+    const content = await readFile(filePath, 'utf-8');
+    
+    // Limpiar comentarios de bloque y de línea para evitar falsos positivos
+    const cleanContent = content
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/.*$/gm, '');
+
+    const detectedMethods: HttpMethod[] = [];
+
+    for (const method of STANDARD_METHODS) {
+      const regexes = [
+        new RegExp(`req\\.method\\s*===\\s*['"\`]${method}['"\`]`),
+        new RegExp(`req\\.method\\s*==\\s*['"\`]${method}['"\`]`),
+        new RegExp(`case\\s+['"\`]${method}['"\`]\\s*:`),
+      ];
+      if (regexes.some(r => r.test(cleanContent))) {
+        detectedMethods.push(method);
+      }
+    }
+
+    return detectedMethods.length > 0 ? detectedMethods : ['GET', 'POST'];
+  } catch {
+    return ['GET', 'POST'];
+  }
+}
+
 export async function scanNextRoutes(options: NextScanOptions = {}): Promise<Endpoint[]> {
   const cwd = options.cwd ?? process.cwd();
   const endpoints: Endpoint[] = [];
@@ -68,12 +96,14 @@ export async function scanNextRoutes(options: NextScanOptions = {}): Promise<End
       .replace(/^.*?app/, '')
       .replace(/\/route\.(ts|js)$/, '');
     const cleanedPath = cleanNextPath(rawRoute === '' ? '/' : rawRoute);
-    const methods = await extractAppRouterMethods(`${cwd}/${file}`);
+    
+    const isGraphQL = cleanedPath === '/api/graphql' || cleanedPath === '/graphql' || cleanedPath.endsWith('/graphql');
+    const methods: HttpMethod[] = isGraphQL ? ['POST'] : await extractAppRouterMethods(`${cwd}/${file}`);
 
     endpoints.push({
       path: cleanedPath,
       methods,
-      fileType: cleanedPath.includes('graphql') ? 'graphql' : 'rest',
+      fileType: isGraphQL ? 'graphql' : 'rest',
       sourceFile: file.replace(/\\/g, '/'),
       router: 'app',
     });
@@ -95,11 +125,13 @@ export async function scanNextRoutes(options: NextScanOptions = {}): Promise<End
     }
 
     const cleanedPath = cleanNextPath(rawRoute);
+    const isGraphQL = cleanedPath === '/api/graphql' || cleanedPath === '/graphql' || cleanedPath.endsWith('/graphql');
+    const methods: HttpMethod[] = isGraphQL ? ['POST'] : await extractPagesRouterMethods(`${cwd}/${file}`);
 
     endpoints.push({
       path: cleanedPath,
-      methods: cleanedPath.includes('graphql') ? ['POST'] : ['GET', 'POST'],
-      fileType: cleanedPath.includes('graphql') ? 'graphql' : 'rest',
+      methods,
+      fileType: isGraphQL ? 'graphql' : 'rest',
       sourceFile: file.replace(/\\/g, '/'),
       router: 'pages',
     });

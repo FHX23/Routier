@@ -17,4 +17,9 @@ test('scanNextRoutes detects app and pages router endpoints', async () => {
   assert.deepEqual(byPath.get('/api/comments')?.methods, ['GET', 'POST']);
   assert.deepEqual(byPath.get('/api/legacy/:id')?.methods, ['GET', 'POST']);
   assert.equal(byPath.get('/api/legacy/:id')?.router, 'pages');
+
+  // Pruebas añadidas para inferencia y exclusión de falsos positivos
+  assert.equal(byPath.get('/api/graphql-logs')?.fileType, 'rest');
+  assert.deepEqual(byPath.get('/api/specific')?.methods.sort(), ['DELETE', 'PATCH', 'PUT'].sort());
+  assert.equal(byPath.get('/api/specific')?.router, 'pages');
 });
