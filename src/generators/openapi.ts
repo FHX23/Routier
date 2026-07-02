@@ -1,4 +1,4 @@
-import type { Endpoint, GraphQLOperation, ScanResult } from '../types.js';
+import type { Endpoint, GraphQLOperation, ScanResult, HttpMethod } from '../types.js';
 
 export function generateOpenAPI(scan: ScanResult, options: { baseUrl: string }) {
   const paths: Record<string, any> = {};
@@ -26,7 +26,44 @@ export function generateOpenAPI(scan: ScanResult, options: { baseUrl: string }) 
 
     for (const method of endpoint.methods) {
       const lowerMethod = method.toLowerCase();
-      paths[openapiPath][lowerMethod] = {
+      const meta = endpoint.methodsMetadata?.[method];
+
+      const opParams: any[] = [];
+      if (meta?.headers) {
+        for (const header of meta.headers) {
+          const isAuth = header.toLowerCase() === 'authorization';
+          opParams.push({
+            name: header,
+            in: 'header',
+            required: isAuth,
+            schema: {
+              type: 'string',
+              default: isAuth ? 'Bearer {{token}}' : `{{${header.toLowerCase()}}}`,
+            },
+          });
+        }
+      }
+
+      let requestBody: any = undefined;
+      if (meta?.body && ['post', 'put', 'patch'].includes(lowerMethod)) {
+        try {
+          const example = JSON.parse(meta.body);
+          requestBody = {
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  example,
+                },
+              },
+            },
+          };
+        } catch {
+          // ignore
+        }
+      }
+
+      const operation: any = {
         summary: `${method} ${openapiPath}`,
         responses: {
           '200': {
@@ -34,6 +71,23 @@ export function generateOpenAPI(scan: ScanResult, options: { baseUrl: string }) 
           },
         },
       };
+
+      if (opParams.length > 0) {
+        operation.parameters = opParams;
+      }
+      if (requestBody) {
+        operation.requestBody = requestBody;
+      }
+
+      // custom extensions
+      if (meta?.headers) {
+        operation['x-routier-headers'] = meta.headers;
+      }
+      if (meta?.body) {
+        operation['x-routier-body'] = meta.body;
+      }
+
+      paths[openapiPath][lowerMethod] = operation;
     }
   }
 
@@ -158,6 +212,18 @@ export function parseOpenAPI(openapi: any): ScanResult {
         .filter((m) => !m.startsWith('x-') && m !== 'parameters')
         .map((m) => m.toUpperCase()) as any[];
 
+      const methodsMetadata: Record<HttpMethod, { headers?: string[]; body?: string }> = {} as any;
+
+      for (const [method, op] of Object.entries(item)) {
+        if (method === 'parameters' || method.startsWith('x-')) continue;
+        const operation = op as any;
+        const headers = operation['x-routier-headers'];
+        const body = operation['x-routier-body'];
+        if (headers || body) {
+          methodsMetadata[method.toUpperCase() as HttpMethod] = { headers, body };
+        }
+      }
+
       // Si la ruta cruda es el endpoint general de GraphQL (por ejemplo, si no hay operaciones registradas)
       const fileType = routePath === '/api/graphql' ? 'graphql' : 'rest';
 
@@ -168,6 +234,7 @@ export function parseOpenAPI(openapi: any): ScanResult {
           fileType,
           sourceFile,
           router,
+          methodsMetadata: Object.keys(methodsMetadata).length > 0 ? methodsMetadata : undefined,
         });
       }
     }
