@@ -177,18 +177,48 @@ Insomnia:
 2. Import.
 3. Selecciona `routier-insomnia.json`.
 
+## Inferencia Avanzada (Auth y Bodies de Zod)
+
+Routier realiza análisis estático avanzado de tu código Next.js para mejorar la calidad de las colecciones resultantes:
+
+### 1. Cabeceras y Tokens
+Si el código lee cabeceras a través de `req.headers.get('Authorization')` o `req.headers['authorization']` (o variables como tokens), Routier deduce que la ruta requiere autenticación e inyecta la cabecera `Authorization: Bearer {{token}}` (o el nombre de cabecera personalizado correspondiente) automáticamente en OpenAPI y los exportadores.
+
+### 2. Payloads de Request (Zod)
+Si tu handler valida el body con Zod mediante `schema.parse(body)` o `schema.safeParse(body)`, Routier escanea tu archivo, localiza la declaración `const schema = z.object({ ... })` y genera un JSON de ejemplo realista en las peticiones POST, PUT y PATCH. Soporta:
+- Datos básicos (`z.string()`, `z.number()`, `z.boolean()`).
+- Formatos específicos (`z.string().email()`, `z.string().uuid()`).
+- Fechas (`z.date()`).
+- Enums (`z.enum(['A', 'B'])`).
+- Arrays (`z.array(...)`).
+- Objetos anidados (`z.object(...)`).
+
+## Exclusión de Carpetas (`--exclude`)
+
+Puedes indicar directorios que no deban ser escaneados por Routier mediante el flag `--exclude`:
+
+```bash
+node dist/index.js export --cwd . --exclude **/temp/** **/mocks/**
+```
+
+También puedes configurarlo en tu `routier.json` para que sea persistente:
+```json
+{
+  "exclude": ["**/temp/**", "**/mocks/**"]
+}
+```
+
 ## Soporte actual
 
-- Next.js App Router.
-- Next.js Pages Router.
-- REST endpoints basicos.
-- GraphQL Query y Mutation desde SDL estatico.
-- Exportacion Postman.
-- Exportacion Insomnia.
+- Next.js App Router (Handlers).
+- Next.js Pages Router (Endpoints de API).
+- Cabeceras y Autenticación automática (`Authorization`).
+- Inferencia estática de esquemas de Zod para payloads de entrada.
+- Esquema unificado OpenAPI 3.0.3 consolidado.
+- GraphQL Query y Mutation desde SDL estático.
+- Exportación a colecciones Postman e Insomnia.
 
 ## Pendiente
 
-- Express, NestJS y Fastify.
-- Inferencia avanzada de bodies REST.
-- Deteccion de autenticacion.
-- Configuracion persistente `routier.json`.
+- Soporte Multi-Framework (Express, NestJS y Fastify).
+- Integración en CI/CD y automatización de despliegue de colecciones.

@@ -85,13 +85,14 @@ routier export \
 | Opción | Descripción | Defecto |
 |--------|-------------|---------|
 | `--cwd <path>` | Ruta del proyecto a analizar | `.` |
-| `--format <fmt>` | Formato: `all`, `postman`, `insomnia` | `all` |
+| `--format <fmt>` | Formato: `all`, `postman`, `insomnia`, `openapi` | `all` |
 | `--out <path>` | Carpeta de salida | `./routier-exports` |
 | `--base-url <url>` | URL base para requests | `{{baseUrl}}` |
 | `--group-by <mode>` | Agrupar por: `type`, `method`, `path`, `none` | `type` |
 | `--sort <order>` | Orden: `alpha`, `none` | `alpha` |
 | `--graphql-schema <path>` | Schema GraphQL externo (`.graphql` o `.gql`) | Auto-detecta |
 | `--framework <fw>` | Framework: `next` | `next` |
+| `--exclude <dirs...>` | Lista de carpetas o globs a ignorar en el escaneo | (Opciones por defecto) |
 
 ## Características
 
@@ -99,6 +100,10 @@ routier export \
 - **Next.js App Router**: Rutas en `app/**/route.ts`
 - **Next.js Pages Router**: Rutas en `pages/api/**/*.ts`
 - **GraphQL**: Schemas `.graphql`, `.gql` y `gql`/`typeDefs` estáticos en TypeScript
+
+### 🧠 Inferencia Avanzada
+- **Cabeceras y Auth**: Detecta de forma estática lecturas de cabeceras (ej. `req.headers.get('Authorization')`), inyectando tokens variables estándar (`Bearer {{token}}`) en OpenAPI, Postman e Insomnia.
+- **Payloads y Zod**: Analiza recursivamente validadores Zod (`schema.parse(body)`) a nivel de declaración (`z.object({...})`) para generar ejemplos JSON ficticios realistas con emails, UUIDs, números, booleanos, enums y arrays en peticiones POST/PUT/PATCH.
 
 ### 📁 Normalización de rutas
 - Rutas dinámicas Next.js (`[id]`, `[...slug]`) → formato de parámetro (`:id`, `:slug`)
@@ -114,13 +119,12 @@ routier export \
 - **Postman Collection v2.1**: Importable directamente
 - **Insomnia export format 4**: Con workspace y environment predefinido
 
-## Roadmap
-
 - ✅ MVP: Next.js + GraphQL + Postman/Insomnia
+- ✅ Configuración persistente e interactiva (`routier.json`)
+- ✅ Generador OpenAPI consolidado (`routier-openapi.json`)
+- ✅ Inferencia avanzada de Auth, cabeceras y bodies de Zod
 - 🔮 Próximas versiones:
   - Soporte para Express, Fastify, NestJS
-  - Inferencia de auth headers
-  - Configuración persistente (`routier.json`)
   - CI/CD integration
 
 ## Licencia
