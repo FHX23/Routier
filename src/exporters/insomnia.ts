@@ -178,6 +178,20 @@ function folder(id: string, parentId: string, name: string) {
 }
 
 function restToResource(request: RestRequest, parentId: string, generatedIds: Set<string>) {
+  const meta = request.endpoint.methodsMetadata?.[request.method];
+  const headers = meta?.headers?.map((header) => {
+    const isAuth = header.toLowerCase() === 'authorization';
+    return {
+      name: header,
+      value: isAuth ? 'Bearer {{token}}' : `{{ _.${header.toLowerCase()} }}`,
+    };
+  }) ?? [];
+
+  const body = meta?.body ? {
+    mimeType: 'application/json',
+    text: meta.body,
+  } : {};
+
   return {
     _id: resourceId(`req_${parentId}_${request.method}_${request.endpoint.path}`, generatedIds),
     _type: 'request',
@@ -185,8 +199,8 @@ function restToResource(request: RestRequest, parentId: string, generatedIds: Se
     name: `${request.method} ${request.endpoint.path}`,
     method: request.method,
     url: `{{ _.baseUrl }}${request.endpoint.path}`,
-    headers: [],
-    body: {},
+    headers,
+    body,
   };
 }
 

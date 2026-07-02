@@ -139,11 +139,32 @@ function pathFolders(
 }
 
 function restToItem(request: RestRequest, baseUrl: string): PostmanItem {
+  const meta = request.endpoint.methodsMetadata?.[request.method];
+  const headers = meta?.headers?.map((header) => {
+    const isAuth = header.toLowerCase() === 'authorization';
+    return {
+      key: header,
+      value: isAuth ? 'Bearer {{token}}' : `{{${header.toLowerCase()}}}`,
+      type: 'text' as const,
+    };
+  }) ?? [];
+
+  const body = meta?.body ? {
+    mode: 'raw' as const,
+    raw: meta.body,
+    options: {
+      raw: {
+        language: 'json' as const,
+      },
+    },
+  } : undefined;
+
   return {
     name: `${request.method} ${request.endpoint.path}`,
     request: {
       method: request.method,
-      header: [],
+      header: headers,
+      body,
       url: buildPostmanUrl(baseUrl, request.endpoint.path),
     },
   };
