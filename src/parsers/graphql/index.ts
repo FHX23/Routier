@@ -7,7 +7,11 @@ import type { GraphQLOperation } from '../../types.js';
 interface GraphQLScanOptions {
   cwd: string;
   schemaPath?: string;
+  exclude?: string[];
 }
+
+const DEFAULT_IGNORE = ['**/node_modules/**', '**/.next/**', '**/dist/**', '**/routier-exports/**'];
+
 
 interface GraphQLScanResult {
   operations: GraphQLOperation[];
@@ -50,16 +54,18 @@ async function findSchemaCandidates(options: GraphQLScanOptions, warnings: strin
     return [{ sourceFile: path.relative(options.cwd, absolutePath).replace(/\\/g, '/'), sdl: await readFile(absolutePath, 'utf-8') }];
   }
 
+  const ignore = [...DEFAULT_IGNORE, ...(options.exclude ?? [])];
+
   const [schemaFiles, tsFiles] = await Promise.all([
     fg(['**/*.{graphql,gql}'], {
       cwd: options.cwd,
       absolute: true,
-      ignore: ['**/node_modules/**', '**/.next/**', '**/dist/**', '**/routier-exports/**'],
+      ignore,
     }),
     fg(['**/*.{ts,tsx,js,jsx}'], {
       cwd: options.cwd,
       absolute: true,
-      ignore: ['**/node_modules/**', '**/.next/**', '**/dist/**', '**/routier-exports/**'],
+      ignore,
     })
   ]);
 

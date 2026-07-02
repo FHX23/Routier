@@ -45,6 +45,7 @@ Thumbs.db
 
 # Internal documentation and fixtures
 /roadmap_local.md
+/developer_guide.md
 SPECIFICATION.md
 fixtures/
 docs/MVP_PLAN.md

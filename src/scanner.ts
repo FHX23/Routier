@@ -4,8 +4,8 @@ import type { ScanOptions, ScanResult } from './types.js';
 
 export async function scanProject(options: ScanOptions = {}): Promise<ScanResult> {
   const cwd = options.cwd ?? process.cwd();
-  const endpoints = await scanNextRoutes({ cwd });
-  const graphql = await scanGraphQLSchema({ cwd, schemaPath: options.graphqlSchema });
+  const endpoints = await scanNextRoutes({ cwd, exclude: options.exclude });
+  const graphql = await scanGraphQLSchema({ cwd, schemaPath: options.graphqlSchema, exclude: options.exclude });
 
   return {
     endpoints,

@@ -4,9 +4,12 @@ import type { Endpoint, HttpMethod } from '../../types.js';
 
 interface NextScanOptions {
   cwd?: string;
+  exclude?: string[];
 }
 
 const STANDARD_METHODS: HttpMethod[] = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS'];
+const DEFAULT_IGNORE = ['**/node_modules/**', '**/.next/**', '**/dist/**', '**/routier-exports/**'];
+
 
 function cleanNextPath(rawPath: string): string {
   let cleaned = rawPath.replace(/\\/g, '/');
@@ -52,10 +55,11 @@ async function extractAppRouterMethods(filePath: string): Promise<HttpMethod[]> 
 export async function scanNextRoutes(options: NextScanOptions = {}): Promise<Endpoint[]> {
   const cwd = options.cwd ?? process.cwd();
   const endpoints: Endpoint[] = [];
+  const ignore = [...DEFAULT_IGNORE, ...(options.exclude ?? [])];
 
   const appRouterFiles = await fg(['**/app/**/route.{ts,js}'], {
     cwd,
-    ignore: ['**/node_modules/**', '**/.next/**', '**/dist/**', '**/routier-exports/**'],
+    ignore,
   });
 
   for (const file of appRouterFiles) {
@@ -77,7 +81,7 @@ export async function scanNextRoutes(options: NextScanOptions = {}): Promise<End
 
   const pagesRouterFiles = await fg(['**/pages/api/**/*.{ts,js}'], {
     cwd,
-    ignore: ['**/node_modules/**', '**/.next/**', '**/dist/**', '**/routier-exports/**'],
+    ignore,
   });
 
   for (const file of pagesRouterFiles) {

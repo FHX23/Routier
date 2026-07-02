@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { generateInsomniaExport } from '../src/exporters/insomnia.js';
 import { generatePostmanCollection } from '../src/exporters/postman.js';
+import { generateOpenAPI } from '../src/generators/openapi.js';
 import type { ScanResult } from '../src/types.js';
 
 const scan: ScanResult = {
@@ -48,8 +49,10 @@ const scan: ScanResult = {
   warnings: [],
 };
 
+const openapi = generateOpenAPI(scan, { baseUrl: 'http://localhost:3000' });
+
 test('generatePostmanCollection groups REST and GraphQL by type by default', () => {
-  const collection = generatePostmanCollection(scan, { baseUrl: 'http://localhost:3000' });
+  const collection = generatePostmanCollection(openapi, { baseUrl: 'http://localhost:3000' });
   const restFolder = collection.item.find((item) => item.name === 'REST');
   const graphqlFolder = collection.item.find((item) => item.name === 'GraphQL');
   const queriesFolder = graphqlFolder?.item?.find((item) => item.name === 'Queries');
@@ -62,7 +65,7 @@ test('generatePostmanCollection groups REST and GraphQL by type by default', () 
 });
 
 test('generatePostmanCollection supports flat output with groupBy none', () => {
-  const collection = generatePostmanCollection(scan, {
+  const collection = generatePostmanCollection(openapi, {
     baseUrl: 'http://localhost:3000',
     groupBy: 'none',
   });
@@ -73,7 +76,7 @@ test('generatePostmanCollection supports flat output with groupBy none', () => {
 });
 
 test('generateInsomniaExport creates request groups by type by default', () => {
-  const insomnia = generateInsomniaExport(scan, { baseUrl: 'http://localhost:3000' });
+  const insomnia = generateInsomniaExport(openapi, { baseUrl: 'http://localhost:3000' });
   const folders = insomnia.resources.filter((resource) => resource._type === 'request_group');
   const requests = insomnia.resources.filter((resource) => resource._type === 'request');
 
@@ -85,7 +88,7 @@ test('generateInsomniaExport creates request groups by type by default', () => {
 });
 
 test('generateInsomniaExport supports flat output with groupBy none', () => {
-  const insomnia = generateInsomniaExport(scan, {
+  const insomnia = generateInsomniaExport(openapi, {
     baseUrl: 'http://localhost:3000',
     groupBy: 'none',
   });

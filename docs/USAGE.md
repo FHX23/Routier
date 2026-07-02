@@ -43,7 +43,14 @@ routier-exports/
 --format all
 --format postman
 --format insomnia
+--format openapi
 ```
+
+- `all` (predeterminado): Genera los tres archivos de exportación en la carpeta de destino.
+- `postman`: Genera la colección Postman v2.1 (`routier-postman.json`).
+- `insomnia`: Genera el workspace Insomnia export format v4 (`routier-insomnia.json`).
+- `openapi`: Genera el esquema consolidado OpenAPI 3.0.3 (`routier-openapi.json`). Este archivo es la fuente de verdad y se puede importar directamente en Postman, Insomnia, Bruno, Hoppscotch, Swagger UI, etc.
+
 
 ## Agrupacion visual
 
@@ -91,6 +98,38 @@ node dist/index.js export --cwd "C:\ruta\a\tu\proyecto-next" --format all --grou
 ```
 
 `alpha` ordena endpoints y operaciones por nombre/ruta. `none` respeta el orden del scanner.
+
+## Configuración Persistente (routier.json)
+
+Routier permite guardar las opciones de tu proyecto en un archivo local llamado `routier.json` en la raíz del directorio de trabajo. Esto evita tener que pasar flags largos por consola en cada ejecución.
+
+### Estructura de `routier.json`
+El archivo JSON soporta las siguientes opciones opcionales:
+
+```json
+{
+  "framework": "next",
+  "out": "./routier-exports",
+  "baseUrl": "http://localhost:3000",
+  "format": "all",
+  "groupBy": "type",
+  "sort": "alpha",
+  "graphqlSchema": "./schema.graphql",
+  "exclude": ["**/temp/**", "**/mocks/**"]
+}
+```
+
+### Reglas de Precedencia
+Los flags explícitos que envíes en el comando de terminal **siempre sobrescriben** los valores configurados en `routier.json`.
+
+Ejemplo: si en el JSON configuras `"out": "./routier-exports"` pero ejecutas:
+```bash
+node dist/index.js export --out ./exports-ci
+```
+El CLI respetará el flag de consola y exportará a `./exports-ci`.
+
+### Asistente de Configuración Automática
+Si ejecutas `scan` o `export` en una terminal interactiva sin flags de CLI y sin un archivo `routier.json` presente, Routier iniciará un asistente interactivo preguntándote la configuración de tu framework, URL y esquemas. Al finalizar, creará el archivo `routier.json` automáticamente.
 
 ## GraphQL
 

@@ -37,4 +37,16 @@ export interface ScanResult {
 export interface ScanOptions {
   cwd?: string;
   graphqlSchema?: string;
+  exclude?: string[];
+}
+
+export interface RoutierConfig {
+  framework?: string;
+  out?: string;
+  baseUrl?: string;
+  format?: 'postman' | 'insomnia' | 'openapi' | 'all';
+  groupBy?: 'type' | 'method' | 'path' | 'none';
+  sort?: 'alpha' | 'none';
+  graphqlSchema?: string;
+  exclude?: string[];
 }

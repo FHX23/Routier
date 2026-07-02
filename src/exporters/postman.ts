@@ -1,5 +1,6 @@
 import type { GroupBy, SortMode } from './index.js';
 import type { Endpoint, GraphQLOperation, HttpMethod, ScanResult } from '../types.js';
+import { parseOpenAPI } from '../generators/openapi.js';
 
 interface ExportOptions {
   name?: string;
@@ -21,7 +22,8 @@ interface RestRequest {
 
 const METHOD_ORDER: HttpMethod[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
 
-export function generatePostmanCollection(scan: ScanResult, options: ExportOptions) {
+export function generatePostmanCollection(openapi: any, options: ExportOptions) {
+  const scan = parseOpenAPI(openapi);
   const name = options.name ?? 'Routier API';
   const groupBy = options.groupBy ?? 'type';
   const sort = options.sort ?? 'alpha';

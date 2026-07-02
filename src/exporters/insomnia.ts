@@ -1,5 +1,6 @@
 import type { GroupBy, SortMode } from './index.js';
 import type { Endpoint, GraphQLOperation, HttpMethod, ScanResult } from '../types.js';
+import { parseOpenAPI } from '../generators/openapi.js';
 
 interface ExportOptions {
   name?: string;
@@ -15,7 +16,8 @@ interface RestRequest {
 
 const METHOD_ORDER: HttpMethod[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'];
 
-export function generateInsomniaExport(scan: ScanResult, options: ExportOptions) {
+export function generateInsomniaExport(openapi: any, options: ExportOptions) {
+  const scan = parseOpenAPI(openapi);
   const workspaceId = 'wrk_routier';
   const environmentId = 'env_routier';
   const groupBy = options.groupBy ?? 'type';
