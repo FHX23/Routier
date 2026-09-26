@@ -1,6 +1,6 @@
 import type { GroupBy, SortMode } from './index.js';
 import type { Endpoint, GraphQLOperation, HttpMethod, ScanResult } from '../types.js';
-import { parseOpenAPI } from '../generators/openapi.js';
+import { graphqlPathOf, parseOpenAPI } from '../generators/openapi.js';
 
 interface ExportOptions {
   name?: string;
@@ -24,7 +24,7 @@ const METHOD_ORDER: HttpMethod[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HE
 
 export function generatePostmanCollection(openapi: any, options: ExportOptions) {
   const scan = parseOpenAPI(openapi);
-  const name = options.name ?? 'Routier API';
+  const name = options.name ?? openapi.info?.title ?? 'Routier API';
   const groupBy = options.groupBy ?? 'type';
   const sort = options.sort ?? 'alpha';
 
@@ -39,8 +39,28 @@ export function generatePostmanCollection(openapi: any, options: ExportOptions) 
       schema: 'https://schema.getpostman.com/json/collection/v2.1.0/collection.json',
     },
     item: buildItems(scan, { ...options, baseUrl, groupBy, sort }),
-    variable: [{ key: 'baseUrl', value: baseUrl === '{{baseUrl}}' ? 'http://localhost:3000' : baseUrl }],
+    variable: [
+      { key: 'baseUrl', value: baseUrl === '{{baseUrl}}' ? defaultServer(openapi) : baseUrl },
+      ...headerVariables(scan).map((key) => ({ key, value: '' })),
+    ],
   };
+}
+
+function defaultServer(openapi: any): string {
+  return openapi.servers?.[0]?.variables?.baseUrl?.default ?? 'http://localhost:3000';
+}
+
+/** Variables usadas por las cabeceras generadas (`token` para Authorization y una por cabecera personalizada). */
+function headerVariables(scan: ScanResult): string[] {
+  const keys = new Set<string>();
+  for (const endpoint of scan.endpoints) {
+    for (const meta of Object.values(endpoint.methodsMetadata ?? {})) {
+      for (const header of meta?.headers ?? []) {
+        keys.add(header.toLowerCase() === 'authorization' ? 'token' : header.toLowerCase());
+      }
+    }
+  }
+  return [...keys].sort();
 }
 
 function buildItems(scan: ScanResult, options: Required<Pick<ExportOptions, 'baseUrl' | 'groupBy' | 'sort'>>): PostmanItem[] {
@@ -51,11 +71,12 @@ function buildItems(scan: ScanResult, options: Required<Pick<ExportOptions, 'bas
     .filter((endpoint) => endpoint.fileType === 'graphql')
     .flatMap((endpoint) => endpoint.methods.map((method) => ({ endpoint, method })));
   const graphqlOperations = sortGraphqlOperations(scan.graphqlOperations, options.sort);
+  const graphqlPath = graphqlPathOf(scan);
 
   if (options.groupBy === 'none') {
     return [
       ...sortRestRequests([...restRequests, ...graphqlEndpointRequests], options.sort).map((request) => restToItem(request, options.baseUrl)),
-      ...graphqlOperations.map((operation) => graphqlToItem(operation, options.baseUrl)),
+      ...graphqlOperations.map((operation) => graphqlToItem(operation, options.baseUrl, graphqlPath)),
     ];
   }
 
@@ -64,7 +85,7 @@ function buildItems(scan: ScanResult, options: Required<Pick<ExportOptions, 'bas
   }
 
   if (options.groupBy === 'path') {
-    return pathFolders([...restRequests, ...graphqlEndpointRequests], graphqlOperations, options);
+    return pathFolders([...restRequests, ...graphqlEndpointRequests], graphqlOperations, graphqlPath, options);
   }
 
   return [
@@ -79,13 +100,13 @@ function buildItems(scan: ScanResult, options: Required<Pick<ExportOptions, 'bas
           name: 'Queries',
           item: graphqlOperations
             .filter((operation) => operation.type === 'query')
-            .map((operation) => graphqlToItem(operation, options.baseUrl)),
+            .map((operation) => graphqlToItem(operation, options.baseUrl, graphqlPath)),
         },
         {
           name: 'Mutations',
           item: graphqlOperations
             .filter((operation) => operation.type === 'mutation')
-            .map((operation) => graphqlToItem(operation, options.baseUrl)),
+            .map((operation) => graphqlToItem(operation, options.baseUrl, graphqlPath)),
         },
         {
           name: 'Endpoint',
@@ -110,6 +131,7 @@ function methodFolders(requests: RestRequest[], options: Required<Pick<ExportOpt
 function pathFolders(
   requests: RestRequest[],
   graphqlOperations: GraphQLOperation[],
+  graphqlPath: string,
   options: Required<Pick<ExportOptions, 'baseUrl' | 'sort'>>,
 ): PostmanItem[] {
   const grouped = new Map<string, RestRequest[]>();
@@ -133,7 +155,7 @@ function pathFolders(
     ...restFolders,
     {
       name: 'graphql-operations',
-      item: sortGraphqlOperations(graphqlOperations, options.sort).map((operation) => graphqlToItem(operation, options.baseUrl)),
+      item: sortGraphqlOperations(graphqlOperations, options.sort).map((operation) => graphqlToItem(operation, options.baseUrl, graphqlPath)),
     },
   ];
 }
@@ -148,6 +170,10 @@ function restToItem(request: RestRequest, baseUrl: string): PostmanItem {
       type: 'text' as const,
     };
   }) ?? [];
+
+  if (meta?.body) {
+    headers.push({ key: 'Content-Type', value: 'application/json', type: 'text' as const });
+  }
 
   const body = meta?.body ? {
     mode: 'raw' as const,
@@ -165,12 +191,12 @@ function restToItem(request: RestRequest, baseUrl: string): PostmanItem {
       method: request.method,
       header: headers,
       body,
-      url: buildPostmanUrl(baseUrl, request.endpoint.path),
+      url: buildPostmanUrl(baseUrl, request.endpoint.path, meta?.query),
     },
   };
 }
 
-function graphqlToItem(operation: GraphQLOperation, baseUrl: string): PostmanItem {
+function graphqlToItem(operation: GraphQLOperation, baseUrl: string, graphqlPath: string): PostmanItem {
   return {
     name: operation.name,
     request: {
@@ -181,7 +207,7 @@ function graphqlToItem(operation: GraphQLOperation, baseUrl: string): PostmanIte
         raw: JSON.stringify(operation.body, null, 2),
         options: { raw: { language: 'json' } },
       },
-      url: buildPostmanUrl(baseUrl, '/api/graphql'),
+      url: buildPostmanUrl(baseUrl, graphqlPath),
     },
   };
 }
@@ -196,18 +222,30 @@ function sortGraphqlOperations(operations: GraphQLOperation[], sort: SortMode): 
   return [...operations].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function buildPostmanUrl(baseUrl: string, routePath: string) {
-  const raw = `${baseUrl.replace(/\/$/, '')}${routePath}`;
-  if (baseUrl.includes('{{')) {
-    return raw;
+function buildPostmanUrl(baseUrl: string, routePath: string, query: string[] = []) {
+  const base = baseUrl.replace(/\/$/, '');
+  const queryString = query.length > 0 ? `?${query.map((key) => `${key}=`).join('&')}` : '';
+  const raw = `${base}${routePath}${queryString}`;
+  const pathSegments = routePath.split('/').filter(Boolean);
+  const variables = pathSegments.filter((segment) => segment.startsWith(':')).map((segment) => ({ key: segment.slice(1), value: '' }));
+  const extras = {
+    path: pathSegments,
+    ...(query.length > 0 ? { query: query.map((key) => ({ key, value: '' })) } : {}),
+    ...(variables.length > 0 ? { variable: variables } : {}),
+  };
+
+  if (base.includes('{{')) {
+    return { raw, host: [base], ...extras };
   }
 
-  const parsed = new URL(raw);
+  const parsed = new URL(base);
+  const basePath = parsed.pathname.split('/').filter(Boolean);
   return {
     raw,
     protocol: parsed.protocol.replace(':', ''),
     host: parsed.hostname.split('.'),
     port: parsed.port || undefined,
-    path: parsed.pathname.split('/').filter(Boolean),
+    ...extras,
+    path: [...basePath, ...pathSegments],
   };
 }

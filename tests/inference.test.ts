@@ -67,7 +67,11 @@ test('generateOpenAPI and parseOpenAPI preserve advanced inference roundtrip los
   assert.equal(postOp.parameters !== undefined, true);
   assert.equal(postOp.parameters.some((p: any) => p.name === 'X-Custom-Header' && p.in === 'header'), true);
   assert.equal(postOp.requestBody !== undefined, true);
-  assert.equal(postOp.requestBody.content['application/json'].schema.example.email, 'user@example.com');
+  assert.equal(postOp.requestBody.content['application/json'].example.email, 'user@example.com');
+  assert.equal(postOp.requestBody.content['application/json'].schema.properties.email.format, 'email');
+  assert.deepEqual(postOp.security, [{ bearerAuth: [] }]);
+  assert.equal(postOp.parameters.some((p: any) => p.name === 'Authorization'), false);
+  assert.deepEqual(openapi.components?.securitySchemes?.bearerAuth, { type: 'http', scheme: 'bearer' });
 
   // Validar ingeniería inversa
   const restored = parseOpenAPI(openapi);
