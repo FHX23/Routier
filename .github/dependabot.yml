@@ -5,9 +5,17 @@ updates:
     schedule:
       interval: weekly
     groups:
+      # Minor and patch updates of runtime dependencies arrive in a single PR;
+      # major updates still get their own PR so they can be reviewed separately.
+      production-minor-and-patch:
+        dependency-type: production
+        update-types: [minor, patch]
       dev-dependencies:
         dependency-type: development
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: monthly
+    groups:
+      github-actions:
+        patterns: ['*']
