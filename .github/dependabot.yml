@@ -1,7 +1,11 @@
 version: 2
+
+# Updates are opened against `dev`; they reach `main` with the next dev -> main PR.
+# Dependabot reads this file from the default branch, so changes here only apply once merged to main.
 updates:
   - package-ecosystem: npm
     directory: /
+    target-branch: dev
     schedule:
       interval: weekly
     groups:
@@ -14,6 +18,7 @@ updates:
         dependency-type: development
   - package-ecosystem: github-actions
     directory: /
+    target-branch: dev
     schedule:
       interval: monthly
     groups:
