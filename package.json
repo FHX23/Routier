@@ -1,28 +1,49 @@
 {
   "name": "routier",
   "version": "0.1.2",
-  "description": "Analizador de rutas para Next.js y GraphQL que exporta a Postman e Insomnia",
-  "main": "./dist/index.js",
+  "description": "Static route scanner for Next.js and GraphQL that generates OpenAPI, Postman and Insomnia collections",
   "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
   "bin": {
-    "routier": "./dist/index.js"
+    "routier": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "README.es.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.12"
   },
   "scripts": {
-    "dev": "tsx src/index.ts",
+    "dev": "tsx src/cli.ts",
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
-    "build": "pnpm run clean && tsc",
+    "build": "npm run clean && tsc",
     "test": "node --import tsx --test tests/*.test.ts",
-    "prepack": "pnpm run build"
+    "prepack": "npm run build",
+    "typecheck": "tsc --noEmit"
   },
   "keywords": [
     "cli",
     "nextjs",
     "graphql",
+    "openapi",
     "postman",
     "insomnia",
     "api",
     "routes",
-    "scanning"
+    "scanner",
+    "zod"
   ],
   "author": "Matias Arenas (FHX23)",
   "license": "ISC",
@@ -34,13 +55,6 @@
     "url": "https://github.com/FHX23/Routier/issues"
   },
   "homepage": "https://github.com/FHX23/Routier#readme",
-  "files": [
-    "dist",
-    "docs/USAGE.md",
-    "README.md",
-    "LICENSE",
-    "package.json"
-  ],
   "packageManager": "pnpm@10.28.2",
   "dependencies": {
     "@clack/prompts": "^1.5.0",
