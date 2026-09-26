@@ -6,7 +6,7 @@ import { generateOpenAPI, parseOpenAPI } from '../src/generators/openapi.js';
 import { generatePostmanCollection } from '../src/exporters/postman.js';
 import { generateInsomniaExport } from '../src/exporters/insomnia.js';
 
-const fixture = path.resolve('fixtures/next-app');
+const fixture = path.resolve('tests/fixtures/next-app');
 
 test('scanNextRoutes infers headers and request bodies from Zod schemas', async () => {
   const routes = await scanNextRoutes({ cwd: fixture });
