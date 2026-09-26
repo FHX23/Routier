@@ -57,7 +57,7 @@
   "homepage": "https://github.com/FHX23/Routier#readme",
   "packageManager": "pnpm@10.28.2",
   "dependencies": {
-    "@clack/prompts": "^1.5.0",
+    "@clack/prompts": "^1.8.1",
     "commander": "^15.0.0",
     "fast-glob": "^3.3.3",
     "graphql": "^17.0.2",
