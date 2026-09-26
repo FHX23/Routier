@@ -1,6 +1,9 @@
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH' | 'HEAD' | 'OPTIONS';
 
-export type RouterType = 'app' | 'pages';
+export type Framework = 'next' | 'express' | 'fastify' | 'nestjs';
+
+/** Origen de un endpoint: App/Pages Router de Next.js o el framework backend que lo declara. */
+export type RouterType = 'app' | 'pages' | 'express' | 'fastify' | 'nestjs';
 
 /** Subconjunto de JSON Schema (compatible con OpenAPI 3.0) que Routier puede inferir. */
 export interface JsonSchema {
@@ -62,12 +65,14 @@ export interface ScanResult {
 
 export interface ScanOptions {
   cwd?: string;
+  /** Framework a analizar. `auto` (por defecto) lo detecta desde el `package.json` del proyecto. */
+  framework?: Framework | 'auto';
   graphqlSchema?: string;
   exclude?: string[];
 }
 
 export interface RoutierConfig {
-  framework?: string;
+  framework?: Framework | 'auto';
   out?: string;
   baseUrl?: string;
   format?: 'postman' | 'insomnia' | 'openapi' | 'all';

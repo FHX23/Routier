@@ -1,0 +1,1 @@
+{ "name": "fastify-fixture", "version": "0.4.0", "dependencies": { "fastify": "^5.0.0", "@fastify/autoload": "^6.0.0" } }

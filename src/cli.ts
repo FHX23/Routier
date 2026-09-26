@@ -20,6 +20,7 @@ const { version } = createRequire(import.meta.url)('../package.json') as { versi
 
 interface CommonOptions {
   cwd?: string;
+  framework?: string;
   graphqlSchema?: string;
   exclude?: string[];
   interactive?: boolean;
@@ -30,7 +31,6 @@ interface ScanOptions extends CommonOptions {
 }
 
 interface ExportOptions extends CommonOptions {
-  framework?: string;
   format?: string;
   groupBy?: string;
   sort?: string;
@@ -57,7 +57,7 @@ const program = new Command();
 
 program
   .name('routier')
-  .description('Scan Next.js and GraphQL projects and generate OpenAPI, Postman and Insomnia collections.')
+  .description('Scan Next.js, Express, Fastify, NestJS and GraphQL projects and generate OpenAPI, Postman and Insomnia collections.')
   .version(version, '-v, --version', 'Print the Routier version')
   .helpCommand('help [command]', 'Show help for a command')
   .addHelpText('after', `
@@ -73,6 +73,7 @@ program
   .command('scan')
   .description('List the REST endpoints and GraphQL operations found in a project')
   .option('--cwd <path>', 'Project directory', '.')
+  .addOption(new Option('--framework <framework>', 'Framework to scan (default: auto)').choices([...SUPPORTED_FRAMEWORKS]))
   .option('--graphql-schema <path>', 'Explicit GraphQL schema file (.graphql or .gql)')
   .option('--exclude <globs...>', 'Glob patterns to skip (e.g. "**/mocks/**")')
   .option('--json', 'Print the scan result as JSON (implies --no-interactive)')
@@ -80,7 +81,7 @@ program
   .addHelpText('after', `
 Examples:
   $ routier scan
-  $ routier scan --cwd ./apps/web
+  $ routier scan --cwd ./apps/api --framework express
   $ routier scan --graphql-schema ./schema.graphql
   $ routier scan --json --exclude "**/mocks/**"`)
   .action(async (options: ScanOptions) => {
@@ -88,12 +89,14 @@ Examples:
       const cwd = path.resolve(options.cwd ?? '.');
       const interactive = options.interactive !== false && !options.json;
       const config = await loadResolvedConfig(cwd, {
+        framework: options.framework as RoutierConfig['framework'],
         graphqlSchema: options.graphqlSchema,
         exclude: options.exclude,
       }, interactive);
 
       const result = await scanProject({
         cwd,
+        framework: config.framework,
         graphqlSchema: config.graphqlSchema,
         exclude: config.exclude,
       });
@@ -125,7 +128,7 @@ program
   .command('export')
   .description('Generate OpenAPI, Postman and/or Insomnia files')
   .option('--cwd <path>', 'Project directory', '.')
-  .addOption(new Option('--framework <framework>', 'Framework to scan').choices([...SUPPORTED_FRAMEWORKS]))
+  .addOption(new Option('--framework <framework>', 'Framework to scan (default: auto)').choices([...SUPPORTED_FRAMEWORKS]))
   .addOption(new Option('--format <format>', 'Output format (default: all)').choices([...SUPPORTED_FORMATS]))
   .addOption(new Option('--group-by <mode>', 'Folder grouping for collections (default: type)').choices([...SUPPORTED_GROUP_BY]))
   .addOption(new Option('--sort <mode>', 'Request ordering (default: alpha)').choices([...SUPPORTED_SORT]))
@@ -144,7 +147,7 @@ Examples:
     try {
       const cwd = path.resolve(options.cwd ?? '.');
       const config = await loadResolvedConfig(cwd, {
-        framework: options.framework,
+        framework: options.framework as RoutierConfig['framework'],
         format: options.format as RoutierConfig['format'],
         groupBy: options.groupBy as RoutierConfig['groupBy'],
         sort: options.sort as RoutierConfig['sort'],
@@ -156,6 +159,7 @@ Examples:
 
       const result = await scanProject({
         cwd,
+        framework: config.framework,
         graphqlSchema: config.graphqlSchema,
         exclude: config.exclude,
       });

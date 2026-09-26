@@ -6,7 +6,7 @@ import type { RoutierConfig } from './types.js';
 
 export const CONFIG_FILE = 'routier.json';
 
-export const SUPPORTED_FRAMEWORKS = ['next'] as const;
+export const SUPPORTED_FRAMEWORKS = ['auto', 'next', 'express', 'fastify', 'nestjs'] as const;
 export const SUPPORTED_FORMATS = ['all', 'openapi', 'postman', 'insomnia'] as const;
 export const SUPPORTED_GROUP_BY = ['type', 'method', 'path', 'none'] as const;
 export const SUPPORTED_SORT = ['alpha', 'none'] as const;
@@ -73,12 +73,16 @@ export async function createInteractiveConfig(cwd: string): Promise<RoutierConfi
     return null;
   }
 
-  const framework = await select({
+  const framework = await select<RoutierConfig['framework']>({
     message: 'Project framework:',
     options: [
-      { value: 'next', label: 'Next.js (App Router and Pages Router)' },
+      { value: 'auto', label: 'Detect automatically', hint: 'from package.json' },
+      { value: 'next', label: 'Next.js', hint: 'App Router and Pages Router' },
+      { value: 'express', label: 'Express' },
+      { value: 'fastify', label: 'Fastify' },
+      { value: 'nestjs', label: 'NestJS' },
     ],
-    initialValue: 'next',
+    initialValue: 'auto',
   });
   handleCancel(framework);
 
