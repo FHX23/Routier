@@ -1,40 +1,96 @@
 #!/usr/bin/env node
+import { createRequire } from 'node:module';
+import path from 'node:path';
 import { log } from '@clack/prompts';
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import color from 'picocolors';
 import { writeExports, type ExportFormat, type GroupBy, type SortMode } from './exporters/index.js';
 import { scanProject } from './scanner.js';
-import { resolveConfig } from './config.js';
-import { createRequire } from 'node:module';
+import {
+  SUPPORTED_FORMATS,
+  SUPPORTED_FRAMEWORKS,
+  SUPPORTED_GROUP_BY,
+  SUPPORTED_SORT,
+  resolveConfig,
+  validateConfig,
+} from './config.js';
+import type { RoutierConfig } from './types.js';
 
 const { version } = createRequire(import.meta.url)('../package.json') as { version: string };
+
+interface CommonOptions {
+  cwd?: string;
+  graphqlSchema?: string;
+  exclude?: string[];
+  interactive?: boolean;
+}
+
+interface ScanOptions extends CommonOptions {
+  json?: boolean;
+}
+
+interface ExportOptions extends CommonOptions {
+  framework?: string;
+  format?: string;
+  groupBy?: string;
+  sort?: string;
+  out?: string;
+  baseUrl?: string;
+}
+
+async function loadResolvedConfig(cwd: string, cliOptions: Partial<RoutierConfig>, interactive: boolean) {
+  const config = await resolveConfig(cwd, cliOptions, { interactive });
+  const errors = validateConfig(config);
+  if (errors.length > 0) {
+    throw new Error(errors.join('\n'));
+  }
+  return config;
+}
+
+function fail(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  log.error(message);
+  process.exitCode = 1;
+}
 
 const program = new Command();
 
 program
   .name('routier')
-  .description('CLI para analizar Next.js, GraphQL y generar colecciones para Postman e Insomnia\n\nUso rápido:\n  routier scan --cwd ./myproject\n  routier export --cwd ./myproject --format all --group-by type')
-  .version(version)
-  .addHelpCommand('help [command]', 'Muestra ayuda para un comando')
-  .on('--help', () => {
-    console.log('\nEjemplos:\n');
-    console.log('  $ routier scan --cwd .');
-    console.log('  $ routier export --cwd . --format postman --group-by type --sort alpha');
-    console.log('  $ routier export --cwd . --format insomnia --out ./exports');
-    console.log('\nMás información: https://github.com/FHX23/Routier');
-  });
+  .description('Scan Next.js and GraphQL projects and generate OpenAPI, Postman and Insomnia collections.')
+  .version(version, '-v, --version', 'Print the Routier version')
+  .helpCommand('help [command]', 'Show help for a command')
+  .addHelpText('after', `
+Examples:
+  $ routier scan
+  $ routier scan --json > routes.json
+  $ routier export --format all --base-url http://localhost:3000
+  $ routier export --format postman --group-by method --out ./collections
+
+Docs: https://github.com/FHX23/Routier#readme`);
 
 program
   .command('scan')
-  .description('Escanea el proyecto en busca de rutas REST y operaciones GraphQL')
-  .option('--cwd <path>', 'Directorio del proyecto')
-  .option('--graphql-schema <path>', 'Ruta explícita al schema GraphQL (.graphql o .gql)')
-  .option('--exclude <dirs...>', 'Directorios a excluir del escaneo (ej. **/mocks/**)')
-  .addHelpText('after', '\nEjemplos:\n  $ routier scan\n  $ routier scan --cwd ./src\n  $ routier scan --graphql-schema ./schema.graphql\n  $ routier scan --exclude **/mocks/** **/temp/**')
-  .action(async (options: { cwd?: string; graphqlSchema?: string; exclude?: string[] }) => {
+  .description('List the REST endpoints and GraphQL operations found in a project')
+  .option('--cwd <path>', 'Project directory', '.')
+  .option('--graphql-schema <path>', 'Explicit GraphQL schema file (.graphql or .gql)')
+  .option('--exclude <globs...>', 'Glob patterns to skip (e.g. "**/mocks/**")')
+  .option('--json', 'Print the scan result as JSON (implies --no-interactive)')
+  .option('--no-interactive', 'Never prompt to create routier.json')
+  .addHelpText('after', `
+Examples:
+  $ routier scan
+  $ routier scan --cwd ./apps/web
+  $ routier scan --graphql-schema ./schema.graphql
+  $ routier scan --json --exclude "**/mocks/**"`)
+  .action(async (options: ScanOptions) => {
     try {
-      const cwd = options.cwd ?? '.';
-      const config = await resolveConfig(cwd, options);
+      const cwd = path.resolve(options.cwd ?? '.');
+      const interactive = options.interactive !== false && !options.json;
+      const config = await loadResolvedConfig(cwd, {
+        graphqlSchema: options.graphqlSchema,
+        exclude: options.exclude,
+      }, interactive);
 
       const result = await scanProject({
         cwd,
@@ -42,105 +98,88 @@ program
         exclude: config.exclude,
       });
 
-      log.info(color.cyan(`REST/HTTP endpoints detectados: ${result.endpoints.length}`));
-      for (const endpoint of result.endpoints) {
-        log.step(`${endpoint.methods.join(', ')} ${endpoint.path} (${endpoint.router}) - ${endpoint.sourceFile}`);
+      if (options.json) {
+        process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+        return;
       }
 
-      log.info(color.magenta(`Operaciones GraphQL detectadas: ${result.graphqlOperations.length}`));
+      log.info(color.cyan(`REST endpoints found: ${result.endpoints.length}`));
+      for (const endpoint of result.endpoints) {
+        log.step(`${endpoint.methods.join(', ')} ${endpoint.path} ${color.dim(`(${endpoint.router}) ${endpoint.sourceFile}`)}`);
+      }
+
+      log.info(color.magenta(`GraphQL operations found: ${result.graphqlOperations.length}`));
       for (const operation of result.graphqlOperations) {
-        log.step(`${operation.type} ${operation.name} - ${operation.sourceFile}`);
+        log.step(`${operation.type} ${operation.name} ${color.dim(operation.sourceFile)}`);
       }
 
       for (const warning of result.warnings) {
         log.warn(warning);
       }
     } catch (error) {
-      log.error(String(error));
-      process.exitCode = 1;
+      fail(error);
     }
   });
 
 program
   .command('export')
-  .description('Genera archivos importables en Postman e Insomnia')
-  .option('--cwd <path>', 'Directorio del proyecto')
-  .option('--framework <framework>', 'Framework soportado: next')
-  .option('--format <format>', 'Formatos: postman | insomnia | all')
-  .option('--group-by <mode>', 'Agrupar por: type | method | path | none')
-  .option('--sort <mode>', 'Ordenar por: alpha | none')
-  .option('--out <path>', 'Directorio de salida')
-  .option('--base-url <url>', 'Base URL para requests')
-  .option('--graphql-schema <path>', 'Ruta explícita al schema GraphQL')
-  .option('--exclude <dirs...>', 'Directorios a excluir del escaneo (ej. **/mocks/**)')
-  .addHelpText('after', '\nEjemplos:\n  $ routier export\n  $ routier export --format postman --group-by type --sort alpha\n  $ routier export --cwd ./app --out ./collections --base-url http://localhost:3000\n  $ routier export --format insomnia --group-by none\n  $ routier export --exclude **/mocks/**')
-  .action(async (options: {
-    cwd?: string;
-    framework?: string;
-    format?: string;
-    groupBy?: string;
-    sort?: string;
-    out?: string;
-    baseUrl?: string;
-    graphqlSchema?: string;
-    exclude?: string[];
-  }) => {
+  .description('Generate OpenAPI, Postman and/or Insomnia files')
+  .option('--cwd <path>', 'Project directory', '.')
+  .addOption(new Option('--framework <framework>', 'Framework to scan').choices([...SUPPORTED_FRAMEWORKS]))
+  .addOption(new Option('--format <format>', 'Output format (default: all)').choices([...SUPPORTED_FORMATS]))
+  .addOption(new Option('--group-by <mode>', 'Folder grouping for collections (default: type)').choices([...SUPPORTED_GROUP_BY]))
+  .addOption(new Option('--sort <mode>', 'Request ordering (default: alpha)').choices([...SUPPORTED_SORT]))
+  .option('--out <path>', 'Output directory, relative to --cwd (default: ./routier-exports)')
+  .option('--base-url <url>', 'Base URL for requests (default: {{baseUrl}} variable)')
+  .option('--graphql-schema <path>', 'Explicit GraphQL schema file (.graphql or .gql)')
+  .option('--exclude <globs...>', 'Glob patterns to skip (e.g. "**/mocks/**")')
+  .option('--no-interactive', 'Never prompt to create routier.json')
+  .addHelpText('after', `
+Examples:
+  $ routier export
+  $ routier export --format openapi
+  $ routier export --format postman --group-by method --sort alpha
+  $ routier export --cwd ./app --out ./collections --base-url http://localhost:3000`)
+  .action(async (options: ExportOptions) => {
     try {
-      const cwd = options.cwd ?? '.';
-      const config = await resolveConfig(cwd, options as any);
-
-      // Aplicar valores predeterminados finales después de resolver la configuración
-      const framework = config.framework ?? 'next';
-      const format = config.format ?? 'all';
-      const groupBy = config.groupBy ?? 'type';
-      const sort = config.sort ?? 'alpha';
-      const out = config.out ?? './routier-exports';
-      const baseUrl = config.baseUrl ?? '{{baseUrl}}';
-      const graphqlSchema = config.graphqlSchema;
-      const exclude = config.exclude;
-
-      if (framework !== 'next') {
-        throw new Error('El MVP solo soporta --framework next.');
-      }
-
-      if (!['postman', 'insomnia', 'openapi', 'all'].includes(format)) {
-        throw new Error('--format debe ser postman, insomnia, openapi o all.');
-      }
-
-      if (!['type', 'method', 'path', 'none'].includes(groupBy)) {
-        throw new Error('--group-by debe ser type, method, path o none.');
-      }
-
-      if (!['alpha', 'none'].includes(sort)) {
-        throw new Error('--sort debe ser alpha o none.');
-      }
+      const cwd = path.resolve(options.cwd ?? '.');
+      const config = await loadResolvedConfig(cwd, {
+        framework: options.framework,
+        format: options.format as RoutierConfig['format'],
+        groupBy: options.groupBy as RoutierConfig['groupBy'],
+        sort: options.sort as RoutierConfig['sort'],
+        out: options.out,
+        baseUrl: options.baseUrl,
+        graphqlSchema: options.graphqlSchema,
+        exclude: options.exclude,
+      }, options.interactive !== false);
 
       const result = await scanProject({
         cwd,
-        graphqlSchema,
-        exclude,
+        graphqlSchema: config.graphqlSchema,
+        exclude: config.exclude,
       });
 
       const writtenFiles = await writeExports(result, {
         cwd,
-        outDir: out,
-        format: format as ExportFormat,
-        baseUrl,
-        groupBy: groupBy as GroupBy,
-        sort: sort as SortMode,
+        outDir: config.out ?? './routier-exports',
+        format: (config.format ?? 'all') as ExportFormat,
+        baseUrl: config.baseUrl ?? '{{baseUrl}}',
+        groupBy: (config.groupBy ?? 'type') as GroupBy,
+        sort: (config.sort ?? 'alpha') as SortMode,
       });
 
+      log.info(`${result.endpoints.length} REST endpoints, ${result.graphqlOperations.length} GraphQL operations`);
       for (const file of writtenFiles) {
-        log.success(`Archivo generado: ${file}`);
+        log.success(`Written ${path.relative(process.cwd(), file) || file}`);
       }
 
       for (const warning of result.warnings) {
         log.warn(warning);
       }
     } catch (error) {
-      log.error(String(error));
-      process.exitCode = 1;
+      fail(error);
     }
   });
 
-program.parse(process.argv);
+await program.parseAsync(process.argv);

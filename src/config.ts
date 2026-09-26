@@ -4,15 +4,22 @@ import { confirm, select, text, intro, outro, log, isCancel, cancel } from '@cla
 import color from 'picocolors';
 import type { RoutierConfig } from './types.js';
 
+export const CONFIG_FILE = 'routier.json';
+
+export const SUPPORTED_FRAMEWORKS = ['next'] as const;
+export const SUPPORTED_FORMATS = ['all', 'openapi', 'postman', 'insomnia'] as const;
+export const SUPPORTED_GROUP_BY = ['type', 'method', 'path', 'none'] as const;
+export const SUPPORTED_SORT = ['alpha', 'none'] as const;
+
 function handleCancel<T>(value: T | symbol): asserts value is T {
   if (isCancel(value)) {
-    cancel('Operación cancelada.');
+    cancel('Operation cancelled.');
     process.exit(0);
   }
 }
 
 export async function loadConfig(cwd: string): Promise<RoutierConfig | null> {
-  const configFilePath = path.join(cwd, 'routier.json');
+  const configFilePath = path.join(cwd, CONFIG_FILE);
   try {
     const raw = await readFile(configFilePath, 'utf-8');
     return JSON.parse(raw) as RoutierConfig;
@@ -20,50 +27,77 @@ export async function loadConfig(cwd: string): Promise<RoutierConfig | null> {
     if (error.code === 'ENOENT') {
       return null;
     }
-    log.warn(color.yellow(`Advertencia: Error al parsear routier.json: ${error.message}`));
+    log.warn(color.yellow(`Could not parse ${CONFIG_FILE}: ${error.message}`));
     return null;
   }
 }
 
+/** Valida los valores de la configuración resuelta y devuelve una lista de errores legibles. */
+export function validateConfig(config: RoutierConfig): string[] {
+  const errors: string[] = [];
+  const check = (key: keyof RoutierConfig, flag: string, allowed: readonly string[]) => {
+    const value = config[key];
+    if (value !== undefined && !allowed.includes(value as string)) {
+      errors.push(`Invalid ${flag} "${String(value)}". Expected one of: ${allowed.join(', ')}.`);
+    }
+  };
+
+  check('framework', '--framework', SUPPORTED_FRAMEWORKS);
+  check('format', '--format', SUPPORTED_FORMATS);
+  check('groupBy', '--group-by', SUPPORTED_GROUP_BY);
+  check('sort', '--sort', SUPPORTED_SORT);
+
+  if (config.exclude !== undefined && (!Array.isArray(config.exclude) || config.exclude.some((item) => typeof item !== 'string'))) {
+    errors.push('"exclude" must be an array of glob strings.');
+  }
+  for (const key of ['out', 'baseUrl', 'graphqlSchema'] as const) {
+    if (config[key] !== undefined && typeof config[key] !== 'string') {
+      errors.push(`"${key}" must be a string.`);
+    }
+  }
+
+  return errors;
+}
+
 export async function createInteractiveConfig(cwd: string): Promise<RoutierConfig | null> {
-  intro(color.cyan('Configuración de Routier'));
+  intro(color.cyan('Routier setup'));
 
   const wantConfig = await confirm({
-    message: 'No se encontró el archivo routier.json. ¿Deseas crearlo ahora?',
+    message: `No ${CONFIG_FILE} found. Do you want to create one now?`,
     initialValue: true,
   });
   handleCancel(wantConfig);
 
   if (!wantConfig) {
-    outro(color.yellow('Asistente finalizado. No se creó el archivo de configuración.'));
+    outro(color.yellow(`Skipped. No ${CONFIG_FILE} was created.`));
     return null;
   }
 
   const framework = await select({
-    message: 'Framework de tu proyecto:',
+    message: 'Project framework:',
     options: [
-      { value: 'next', label: 'Next.js (App Router y Pages Router)' }
+      { value: 'next', label: 'Next.js (App Router and Pages Router)' },
     ],
     initialValue: 'next',
   });
   handleCancel(framework);
 
   const out = await text({
-    message: 'Directorio de salida para colecciones exportadas:',
+    message: 'Output directory for exported collections:',
     placeholder: './routier-exports',
     initialValue: './routier-exports',
   });
   handleCancel(out);
 
   const baseUrl = await text({
-    message: 'URL base de las llamadas API:',
+    message: 'Base URL for API requests:',
     placeholder: '{{baseUrl}}',
     initialValue: '{{baseUrl}}',
   });
   handleCancel(baseUrl);
 
   const hasGraphql = await confirm({
-    message: '¿Tu proyecto utiliza un esquema de GraphQL explícito?',
+    message: 'Does your project use an explicit GraphQL schema file?',
     initialValue: false,
   });
   handleCancel(hasGraphql);
@@ -71,7 +105,7 @@ export async function createInteractiveConfig(cwd: string): Promise<RoutierConfi
   let graphqlSchema: string | undefined = undefined;
   if (hasGraphql) {
     const schemaPath = await text({
-      message: 'Ruta al esquema GraphQL (ej. schema.graphql):',
+      message: 'Path to the GraphQL schema (e.g. schema.graphql):',
       placeholder: 'schema.graphql',
       initialValue: 'schema.graphql',
     });
@@ -86,38 +120,46 @@ export async function createInteractiveConfig(cwd: string): Promise<RoutierConfi
     ...(graphqlSchema ? { graphqlSchema } : {}),
   };
 
-  const configFilePath = path.join(cwd, 'routier.json');
+  const configFilePath = path.join(cwd, CONFIG_FILE);
   await writeFile(configFilePath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
 
-  outro(color.green('¡Perfecto! Archivo routier.json creado exitosamente.'));
+  outro(color.green(`${CONFIG_FILE} created.`));
   return config;
 }
 
-export async function resolveConfig(cwd: string, cliOptions: Partial<RoutierConfig>): Promise<RoutierConfig> {
-  const fileConfig = await loadConfig(cwd);
+export interface ResolveConfigOptions {
+  /** Permite abrir el asistente cuando no hay configuración ni flags. Por defecto, solo en una terminal interactiva. */
+  interactive?: boolean;
+}
 
+/**
+ * Combina `routier.json` con las opciones de la CLI (la CLI tiene prioridad).
+ * Si no hay archivo ni flags y la terminal es interactiva, ofrece crear la configuración.
+ */
+export async function resolveConfig(
+  cwd: string,
+  cliOptions: Partial<RoutierConfig>,
+  options: ResolveConfigOptions = {},
+): Promise<RoutierConfig> {
+  const definedCliOptions = Object.fromEntries(
+    Object.entries(cliOptions).filter(([, value]) => value !== undefined),
+  ) as Partial<RoutierConfig>;
+
+  const fileConfig = await loadConfig(cwd);
   if (fileConfig) {
-    const merged: RoutierConfig = { ...fileConfig };
-    for (const key of Object.keys(cliOptions) as Array<keyof RoutierConfig>) {
-      if (cliOptions[key] !== undefined) {
-        merged[key] = cliOptions[key] as any;
-      }
-    }
-    return merged;
+    return { ...fileConfig, ...definedCliOptions };
   }
 
-  const hasCliOptions = Object.entries(cliOptions)
-    .filter(([key]) => key !== 'cwd')
-    .some(([_, val]) => val !== undefined);
+  const hasCliOptions = Object.keys(definedCliOptions).length > 0;
+  const isTTY = Boolean(process.stdout?.isTTY && process.stdin?.isTTY);
+  const interactive = options.interactive ?? isTTY;
 
-  const isInteractive = process.stdout?.isTTY && process.stdin?.isTTY;
-
-  if (!hasCliOptions && isInteractive) {
+  if (!hasCliOptions && interactive && isTTY) {
     const interactiveConfig = await createInteractiveConfig(cwd);
     if (interactiveConfig) {
-      return { ...interactiveConfig, ...cliOptions };
+      return { ...interactiveConfig, ...definedCliOptions };
     }
   }
 
-  return cliOptions;
+  return definedCliOptions;
 }
