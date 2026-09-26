@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import path from 'node:path';
 import { scanNextRoutes } from '../src/parsers/next/index.js';
 
-const fixture = path.resolve('fixtures/next-app');
+const fixture = path.resolve('tests/fixtures/next-app');
 
 test('scanNextRoutes detects app and pages router endpoints', async () => {
   const routes = await scanNextRoutes({ cwd: fixture });

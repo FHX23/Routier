@@ -1,0 +1,21 @@
+scalar DateTime
+
+type User {
+  id: ID!
+  name: String!
+}
+
+type Post {
+  title: String!
+}
+
+type Query {
+  user(id: ID!): User
+  health: String
+  currentTime: DateTime!
+  getPost: Post
+}
+
+type Mutation {
+  createUser(name: String!): User
+}

@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { generateInsomniaExport } from './insomnia.js';
 import { generatePostmanCollection } from './postman.js';
@@ -27,8 +27,9 @@ export async function writeExports(scan: ScanResult, options: WriteExportsOption
     ? (['postman', 'insomnia', 'openapi'] as const) 
     : [options.format];
 
-  // Generar OpenAPI centralizado
-  const openapiObj = generateOpenAPI(scan, { baseUrl: options.baseUrl });
+  // Generar OpenAPI centralizado (fuente de verdad para el resto de formatos)
+  const project = await readProjectInfo(options.cwd);
+  const openapiObj = generateOpenAPI(scan, { baseUrl: options.baseUrl, ...project });
 
   if (formats.includes('openapi')) {
     const file = path.join(outputDir, 'routier-openapi.json');
@@ -57,4 +58,17 @@ export async function writeExports(scan: ScanResult, options: WriteExportsOption
   }
 
   return writtenFiles;
+}
+
+/** Toma nombre y versión del `package.json` del proyecto analizado, si existe. */
+async function readProjectInfo(cwd: string): Promise<{ title?: string; version?: string }> {
+  try {
+    const pkg = JSON.parse(await readFile(path.join(cwd, 'package.json'), 'utf-8'));
+    return {
+      title: typeof pkg.name === 'string' ? `${pkg.name} API` : undefined,
+      version: typeof pkg.version === 'string' ? pkg.version : undefined,
+    };
+  } catch {
+    return {};
+  }
 }

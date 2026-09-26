@@ -1,15 +1,25 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
-import { writeFile, rm } from 'node:fs/promises';
+import { test, before, after } from 'node:test';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { loadConfig, resolveConfig } from '../src/config.js';
 
-const tempCwd = path.resolve('fixtures/next-app');
-const configPath = path.join(tempCwd, 'routier.json');
+let tempCwd: string;
+let configPath: string;
+
+before(async () => {
+  tempCwd = await mkdtemp(path.join(os.tmpdir(), 'routier-config-'));
+  configPath = path.join(tempCwd, 'routier.json');
+});
+
+after(async () => {
+  await rm(tempCwd, { recursive: true, force: true });
+});
 
 test('loadConfig returns null when routier.json does not exist', async () => {
   await rm(configPath, { force: true });
-  
+
   const config = await loadConfig(tempCwd);
   assert.equal(config, null);
 });
@@ -21,9 +31,9 @@ test('loadConfig parses and returns configuration when routier.json exists', asy
     baseUrl: 'http://test-url',
     exclude: ['**/test-ignore/**'],
   };
-  
+
   await writeFile(configPath, JSON.stringify(mockConfig, null, 2), 'utf-8');
-  
+
   try {
     const config = await loadConfig(tempCwd);
     assert.deepEqual(config, mockConfig);
@@ -39,17 +49,17 @@ test('resolveConfig merges CLI options and configuration file, prioritizing CLI'
     baseUrl: 'http://json-url',
     format: 'postman' as const,
   };
-  
+
   await writeFile(configPath, JSON.stringify(mockConfig, null, 2), 'utf-8');
-  
+
   try {
     const cliOptions = {
       out: './cli-out',
       baseUrl: 'http://cli-url',
     };
-    
+
     const resolved = await resolveConfig(tempCwd, cliOptions);
-    
+
     assert.equal(resolved.framework, 'next');
     assert.equal(resolved.format, 'postman');
     assert.equal(resolved.out, './cli-out');

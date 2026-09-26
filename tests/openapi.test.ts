@@ -58,15 +58,39 @@ test('generateOpenAPI converts path parameters and adds parameters specs', () =>
   assert.equal(userParams[0].required, true);
 });
 
-test('generateOpenAPI maps GraphQL operations using x-routier custom extensions', () => {
+test('generateOpenAPI documents GraphQL operations as examples of the real endpoint', () => {
   const openapi = generateOpenAPI(scan, { baseUrl: 'http://localhost:3000' });
-  const healthOp = openapi.paths['/api/graphql/query/health']?.post;
+  const graphql = openapi.paths['/api/graphql'];
+  const media = graphql.post.requestBody.content['application/json'];
 
-  assert.equal(healthOp !== undefined, true);
-  assert.equal(healthOp['x-routier-graphql'], true);
-  assert.equal(healthOp['x-routier-graphql-type'], 'query');
-  assert.equal(healthOp['x-routier-graphql-name'], 'health');
-  assert.equal(healthOp['x-routier-graphql-query'], 'query health { health }');
+  assert.equal(graphql['x-routier-graphql-endpoint'], true);
+  assert.deepEqual(media.examples.query_health.value, { query: 'query health { health }', variables: {} });
+  assert.equal(graphql.post['x-routier-graphql-operations'][0].name, 'health');
+  assert.equal(Object.keys(openapi.paths).some((key) => key.startsWith('/api/graphql/')), false);
+});
+
+test('generateOpenAPI adds unique operationIds, resource tags and document metadata', () => {
+  const openapi = generateOpenAPI(scan, { baseUrl: 'http://localhost:3000', title: 'Demo API', version: '2.0.0' });
+
+  assert.equal(openapi.info.title, 'Demo API');
+  assert.equal(openapi.info.version, '2.0.0');
+  assert.equal(openapi.paths['/api/users/{id}'].get.operationId, 'getApiUsersById');
+  assert.equal(openapi.paths['/api/users/{id}'].post.operationId, 'postApiUsersById');
+  assert.deepEqual(openapi.paths['/api/users/{id}'].get.tags, ['users']);
+  assert.deepEqual(openapi.tags.map((tag: any) => tag.name), ['GraphQL', 'files', 'users']);
+});
+
+test('GraphQL requests use the detected endpoint path', () => {
+  const custom: ScanResult = {
+    ...scan,
+    endpoints: scan.endpoints.map((endpoint) => endpoint.fileType === 'graphql' ? { ...endpoint, path: '/graphql' } : endpoint),
+  };
+  const openapi = generateOpenAPI(custom, { baseUrl: 'http://localhost:3000' });
+  const restored = parseOpenAPI(openapi);
+
+  assert.ok(openapi.paths['/graphql']);
+  assert.equal(openapi.paths['/api/graphql'], undefined);
+  assert.equal(restored.endpoints.find((endpoint) => endpoint.fileType === 'graphql')?.path, '/graphql');
 });
 
 test('parseOpenAPI performs engineering roundtrip to restore standard ScanResult', () => {

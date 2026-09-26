@@ -1,0 +1,29 @@
+name: Bug report
+description: Something is detected wrongly, missing, or the CLI crashes
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you run, what did you expect and what did you get?
+    validations:
+      required: true
+  - type: textarea
+    id: code
+    attributes:
+      label: Minimal route or schema that reproduces it
+      description: A trimmed-down route handler, controller or GraphQL schema. Remove anything private.
+      render: ts
+  - type: input
+    id: command
+    attributes:
+      label: Command
+      placeholder: routier export --format postman
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      placeholder: routier 0.2.0, Node 22.12, Next.js 15 / Express 5 / NestJS 11
+    validations:
+      required: true

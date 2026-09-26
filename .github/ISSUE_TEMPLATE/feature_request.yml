@@ -1,0 +1,16 @@
+name: Feature request
+description: Suggest a framework, pattern or output format Routier should support
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What would you like Routier to do?
+    validations:
+      required: true
+  - type: textarea
+    id: example
+    attributes:
+      label: Example code
+      description: A snippet of the code pattern Routier should understand, if relevant.
+      render: ts

@@ -98,3 +98,38 @@ test('generateInsomniaExport supports flat output with groupBy none', () => {
   assert.equal(folders.length, 0);
   assert.equal(requests.length, 4);
 });
+
+test('exporters define variables for auth and custom headers and include query/path params', () => {
+  const withMeta: ScanResult = {
+    endpoints: [
+      {
+        path: '/api/posts/:id',
+        methods: ['GET'],
+        fileType: 'rest',
+        sourceFile: 'app/api/posts/[id]/route.ts',
+        router: 'app',
+        methodsMetadata: { GET: { headers: ['Authorization', 'X-Api-Key'], query: ['include'] } },
+      },
+    ],
+    graphqlOperations: [],
+    warnings: [],
+  };
+  const doc = generateOpenAPI(withMeta, { baseUrl: '{{baseUrl}}' });
+
+  const postman = generatePostmanCollection(doc, { baseUrl: '{{baseUrl}}', groupBy: 'none' });
+  const item = postman.item[0] as any;
+  assert.equal(item.request.url.raw, '{{baseUrl}}/api/posts/:id?include=');
+  assert.deepEqual(item.request.url.variable, [{ key: 'id', value: '' }]);
+  assert.deepEqual(postman.variable.map((v) => v.key), ['baseUrl', 'token', 'x-api-key']);
+
+  const insomnia = generateInsomniaExport(doc, { baseUrl: '{{baseUrl}}', groupBy: 'none' });
+  const request = (insomnia.resources as any[]).find((r) => r._type === 'request');
+  const env = (insomnia.resources as any[]).find((r) => r._type === 'environment');
+  assert.deepEqual(request.headers, [
+    { name: 'Authorization', value: 'Bearer {{ _.token }}' },
+    { name: 'X-Api-Key', value: '{{ _.x_api_key }}' },
+  ]);
+  assert.deepEqual(request.parameters, [{ name: 'include', value: '' }]);
+  assert.deepEqual(request.pathParameters, [{ name: 'id', value: '' }]);
+  assert.deepEqual(Object.keys(env.data).sort(), ['baseUrl', 'token', 'x_api_key']);
+});

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { scanGraphQLSchema } from '../src/parsers/graphql/index.js';
 
 test('scanGraphQLSchema extracts Query and Mutation operations using hybrid scanning and AST selection rules', async () => {
-  const result = await scanGraphQLSchema({ cwd: path.resolve('fixtures/next-app') });
+  const result = await scanGraphQLSchema({ cwd: path.resolve('tests/fixtures/next-app') });
   const names = result.operations.map((operation) => `${operation.type}:${operation.name}`).sort();
 
   // Debería incluir tanto operaciones de schema.graphql como de api/graphql/route.ts
@@ -34,8 +34,24 @@ test('scanGraphQLSchema extracts Query and Mutation operations using hybrid scan
 });
 
 test('scanGraphQLSchema extracts static typeDefs from TypeScript files', async () => {
-  const result = await scanGraphQLSchema({ cwd: path.resolve('fixtures/graphql-ts') });
+  const result = await scanGraphQLSchema({ cwd: path.resolve('tests/fixtures/graphql-ts') });
   const names = result.operations.map((operation) => `${operation.type}:${operation.name}`).sort();
 
   assert.deepEqual(names, ['mutation:ping', 'query:status']);
+});
+
+test('scanGraphQLSchema supports extend type, custom root types, enums and input objects', async () => {
+  const result = await scanGraphQLSchema({ cwd: path.resolve('tests/fixtures/graphql-modular') });
+  const names = result.operations.map((operation) => `${operation.type}:${operation.name}`).sort();
+
+  assert.deepEqual(names, ['mutation:_empty', 'mutation:createUser', 'query:me', 'query:users']);
+
+  const users = result.operations.find((op) => op.name === 'users');
+  assert.deepEqual(users?.variables, { role: 'ADMIN', limit: 0 });
+  assert.equal(users?.body.query, 'query users($role: Role, $limit: Int) { users(role: $role, limit: $limit) { id } }');
+
+  const createUser = result.operations.find((op) => op.name === 'createUser');
+  assert.deepEqual(createUser?.variables, {
+    input: { email: 'string', role: 'ADMIN', tags: ['string'], profile: { age: 0 } },
+  });
 });

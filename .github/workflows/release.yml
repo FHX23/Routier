@@ -1,0 +1,52 @@
+name: Release
+
+# Publishes to npm when a GitHub Release is published (tag vX.Y.Z).
+# Uses npm Trusted Publishing (OIDC): no npm token is stored in this repository.
+# One-time setup on npmjs.com: package "routier" -> Settings -> Trusted Publisher ->
+# GitHub Actions, repository FHX23/Routier, workflow "release.yml".
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Check that the tag matches package.json
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          if [ "v$VERSION" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $VERSION"
+            exit 1
+          fi
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run typecheck
+      - run: pnpm test
+      - run: pnpm run build
+
+      # Trusted Publishing needs npm >= 11.5.1.
+      - run: npm install -g npm@latest
+
+      - name: Publish
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          case "$VERSION" in
+            *-*) npm publish --provenance --access public --tag next ;;
+            *)   npm publish --provenance --access public ;;
+          esac

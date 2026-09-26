@@ -1,0 +1,18 @@
+input CreateUserInput {
+  email: String!
+  role: Role!
+  tags: [String!]
+  profile: ProfileInput
+}
+
+input ProfileInput {
+  age: Int
+}
+
+extend type RootQuery {
+  users(role: Role, limit: Int): [User!]!
+}
+
+extend type RootMutation {
+  createUser(input: CreateUserInput!): User
+}

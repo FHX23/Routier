@@ -1,0 +1,22 @@
+schema {
+  query: RootQuery
+  mutation: RootMutation
+}
+
+type RootQuery {
+  me: User
+}
+
+type RootMutation {
+  _empty: Boolean
+}
+
+enum Role {
+  ADMIN
+  MEMBER
+}
+
+type User {
+  id: ID!
+  role: Role!
+}

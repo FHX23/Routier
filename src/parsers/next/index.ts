@@ -1,6 +1,10 @@
 import fg from 'fast-glob';
-import { readFile } from 'node:fs/promises';
-import type { Endpoint, HttpMethod } from '../../types.js';
+import path from 'node:path';
+import type { Endpoint, HttpMethod, MethodMetadata } from '../../types.js';
+import { findFunctionBody } from '../shared/code.js';
+import { inferHeaders, inferQueryParams } from '../shared/request.js';
+import { SourceLoader } from '../shared/source.js';
+import { inferZodBody } from '../shared/zod.js';
 
 interface NextScanOptions {
   cwd?: string;
@@ -8,132 +12,189 @@ interface NextScanOptions {
 }
 
 const STANDARD_METHODS: HttpMethod[] = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIONS'];
-const DEFAULT_IGNORE = ['**/node_modules/**', '**/.next/**', '**/dist/**', '**/routier-exports/**'];
+const BODY_METHODS: HttpMethod[] = ['POST', 'PUT', 'PATCH'];
+export const DEFAULT_IGNORE = ['**/node_modules/**', '**/.next/**', '**/dist/**', '**/build/**', '**/out/**', '**/routier-exports/**'];
 
+const TEST_FILE = /\.(test|spec)\.[jt]sx?$|\.d\.ts$/;
 
-function cleanNextPath(rawPath: string): string {
-  let cleaned = rawPath.replace(/\\/g, '/');
+/**
+ * Convierte los segmentos de carpetas de Next.js en una ruta HTTP.
+ * Devuelve `null` si la ruta no es pública (carpetas privadas `_x` o rutas interceptadas `(.)x`).
+ */
+function segmentsToPath(segments: string[]): string | null {
+  const parts: string[] = [];
+  for (const segment of segments) {
+    if (!segment) continue;
+    if (segment.startsWith('_')) return null;
+    if (/^\(\.{1,3}\)/.test(segment) || segment.startsWith('(...)')) return null;
+    if (/^\(.*\)$/.test(segment)) continue;
+    if (segment.startsWith('@')) continue;
 
-  cleaned = cleaned.replace(/\/\([^)]+\)/g, '');
-  cleaned = cleaned.replace(/\[\[\.\.\.([^\]]+)\]\]/g, ':$1');
-  cleaned = cleaned.replace(/\[\.\.\.([^\]]+)\]/g, ':$1');
-  cleaned = cleaned.replace(/\[([^\]]+)\]/g, ':$1');
-
-  if (!cleaned.startsWith('/')) {
-    cleaned = `/${cleaned}`;
+    const catchAll = segment.match(/^\[\[?\.\.\.([^\]]+)\]?\]$/);
+    if (catchAll) { parts.push(`:${catchAll[1]}`); continue; }
+    const dynamic = segment.match(/^\[([^\]]+)\]$/);
+    if (dynamic) { parts.push(`:${dynamic[1]}`); continue; }
+    parts.push(segment);
   }
-
-  return cleaned === '' ? '/' : cleaned;
+  return `/${parts.join('/')}`;
 }
 
-async function extractAppRouterMethods(filePath: string): Promise<HttpMethod[]> {
-  try {
-    const content = await readFile(filePath, 'utf-8');
-    
-    // Limpiar comentarios de bloque y de línea para evitar falsos positivos
-    const cleanContent = content
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .replace(/\/\/.*$/gm, '');
-
-    const detectedMethods: HttpMethod[] = [];
-
-    for (const method of STANDARD_METHODS) {
-      const inlineRegex = new RegExp(`export\\s+(async\\s+)?(function|const|let|var)\\s+${method}\\b`);
-      const blockRegex = new RegExp(`export\\s*\\{[^}]*\\b${method}\\b[^}]*\\}`);
-      
-      if (inlineRegex.test(cleanContent) || blockRegex.test(cleanContent)) {
-        detectedMethods.push(method);
-      }
-    }
-
-    return detectedMethods.length > 0 ? detectedMethods : ['GET'];
-  } catch {
-    return ['GET'];
-  }
+/** Ubica el directorio `app/` o `pages/` que define las rutas, anclado a un segmento completo. */
+function routeSegments(file: string, marker: RegExp): string[] | null {
+  const normalized = file.replace(/\\/g, '/');
+  const match = marker.exec(normalized);
+  if (!match) return null;
+  return normalized.slice(match.index + match[0].length).split('/');
 }
 
-async function extractPagesRouterMethods(filePath: string): Promise<HttpMethod[]> {
-  try {
-    const content = await readFile(filePath, 'utf-8');
-    
-    // Limpiar comentarios de bloque y de línea para evitar falsos positivos
-    const cleanContent = content
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .replace(/\/\/.*$/gm, '');
+function pathParams(routePath: string): Set<string> {
+  return new Set([...routePath.matchAll(/:([\w]+)/g)].map((m) => m[1]));
+}
 
-    const detectedMethods: HttpMethod[] = [];
+function isGraphQLPath(routePath: string): boolean {
+  return routePath === '/graphql' || routePath.endsWith('/graphql');
+}
 
-    for (const method of STANDARD_METHODS) {
-      const regexes = [
-        new RegExp(`req\\.method\\s*===\\s*['"\`]${method}['"\`]`),
-        new RegExp(`req\\.method\\s*==\\s*['"\`]${method}['"\`]`),
-        new RegExp(`case\\s+['"\`]${method}['"\`]\\s*:`),
-      ];
-      if (regexes.some(r => r.test(cleanContent))) {
-        detectedMethods.push(method);
-      }
+function detectAppRouterMethods(code: string): HttpMethod[] {
+  const methods: HttpMethod[] = [];
+  const destructured = [...code.matchAll(/export\s+const\s*\{([^}]*)\}\s*=/g)].map((m) => m[1]).join(',');
+
+  for (const method of STANDARD_METHODS) {
+    const inline = new RegExp(`export\\s+(?:async\\s+)?(?:function\\s*\\*?|const|let|var)\\s+${method}\\b`);
+    const block = new RegExp(`export\\s*\\{[^}]*\\b${method}\\b[^}]*\\}`);
+    const fromDestructuring = new RegExp(`\\b${method}\\b`).test(destructured);
+    if (inline.test(code) || block.test(code) || fromDestructuring) {
+      methods.push(method);
     }
-
-    return detectedMethods.length > 0 ? detectedMethods : ['GET', 'POST'];
-  } catch {
-    return ['GET', 'POST'];
   }
+  return methods;
+}
+
+/** Resuelve el nombre local de un método exportado (`export { handler as GET }` -> `handler`). */
+function localNameForMethod(code: string, method: HttpMethod): string {
+  for (const block of code.matchAll(/export\s*\{([^}]*)\}/g)) {
+    for (const part of block[1].split(',')) {
+      const [local, exported] = part.trim().split(/\s+as\s+/).map((s) => s.trim());
+      if ((exported ?? local) === method) return local;
+    }
+  }
+  return method;
+}
+
+function detectPagesRouterMethods(code: string): HttpMethod[] {
+  const methods: HttpMethod[] = [];
+  for (const method of STANDARD_METHODS) {
+    const patterns = [
+      new RegExp(`\\.method\\s*={2,3}\\s*['"\`]${method}['"\`]`),
+      new RegExp(`['"\`]${method}['"\`]\\s*={2,3}\\s*[\\w$.]*\\.method\\b`),
+      new RegExp(`case\\s+['"\`]${method}['"\`]\\s*:`),
+    ];
+    if (patterns.some((pattern) => pattern.test(code))) {
+      methods.push(method);
+    }
+  }
+  return methods.length > 0 ? methods : ['GET', 'POST'];
+}
+
+async function inferMetadata(
+  handlerBody: string,
+  method: HttpMethod,
+  filePath: string,
+  loader: SourceLoader,
+  routeParams: Set<string>,
+): Promise<MethodMetadata | undefined> {
+  const meta: MethodMetadata = {};
+
+  const headers = inferHeaders(handlerBody);
+  if (headers.length > 0) meta.headers = headers;
+
+  const query = inferQueryParams(handlerBody).filter((name) => !routeParams.has(name));
+  if (query.length > 0) meta.query = query;
+
+  if (BODY_METHODS.includes(method)) {
+    const body = await inferZodBody(handlerBody, filePath, loader);
+    if (body) {
+      meta.body = JSON.stringify(body.example, null, 2);
+      meta.bodySchema = body.schema;
+    }
+  }
+
+  return Object.keys(meta).length > 0 ? meta : undefined;
 }
 
 export async function scanNextRoutes(options: NextScanOptions = {}): Promise<Endpoint[]> {
-  const cwd = options.cwd ?? process.cwd();
-  const endpoints: Endpoint[] = [];
+  const cwd = path.resolve(options.cwd ?? process.cwd());
   const ignore = [...DEFAULT_IGNORE, ...(options.exclude ?? [])];
+  const loader = new SourceLoader(cwd);
+  const endpoints: Endpoint[] = [];
 
-  const appRouterFiles = await fg(['**/app/**/route.{ts,js}'], {
-    cwd,
-    ignore,
-  });
-
+  const appRouterFiles = await fg(['**/app/**/route.{ts,js,mjs}'], { cwd, ignore });
   for (const file of appRouterFiles) {
-    const rawRoute = file
-      .replace(/\\/g, '/')
-      .replace(/^.*?app/, '')
-      .replace(/\/route\.(ts|js)$/, '');
-    const cleanedPath = cleanNextPath(rawRoute === '' ? '/' : rawRoute);
-    
-    const isGraphQL = cleanedPath === '/api/graphql' || cleanedPath === '/graphql' || cleanedPath.endsWith('/graphql');
-    const methods: HttpMethod[] = isGraphQL ? ['POST'] : await extractAppRouterMethods(`${cwd}/${file}`);
+    const segments = routeSegments(file, /(?:^|\/)app\//);
+    if (!segments) continue;
+    const routePath = segmentsToPath(segments.slice(0, -1));
+    if (!routePath) continue;
+
+    const absolute = path.join(cwd, file);
+    const code = (await loader.load(absolute)) ?? '';
+    const isGraphQL = isGraphQLPath(routePath);
+    const detected = detectAppRouterMethods(code);
+    const methods: HttpMethod[] = isGraphQL ? ['POST'] : detected.length > 0 ? detected : ['GET'];
+    const params = pathParams(routePath);
+
+    const methodsMetadata: Endpoint['methodsMetadata'] = {};
+    if (!isGraphQL) {
+      for (const method of methods) {
+        const body = findFunctionBody(code, localNameForMethod(code, method));
+        if (!body) continue;
+        const meta = await inferMetadata(body, method, absolute, loader, params);
+        if (meta) methodsMetadata[method] = meta;
+      }
+    }
 
     endpoints.push({
-      path: cleanedPath,
+      path: routePath,
       methods,
       fileType: isGraphQL ? 'graphql' : 'rest',
-      sourceFile: file.replace(/\\/g, '/'),
+      sourceFile: file,
       router: 'app',
+      methodsMetadata: Object.keys(methodsMetadata).length > 0 ? methodsMetadata : undefined,
     });
   }
 
-  const pagesRouterFiles = await fg(['**/pages/api/**/*.{ts,js}'], {
-    cwd,
-    ignore,
-  });
-
+  const pagesRouterFiles = await fg(['**/pages/api/**/*.{ts,js,tsx,jsx,mjs}'], { cwd, ignore });
   for (const file of pagesRouterFiles) {
-    let rawRoute = file
-      .replace(/\\/g, '/')
-      .replace(/^.*?pages/, '')
-      .replace(/\.(ts|js)$/, '');
+    if (TEST_FILE.test(file)) continue;
+    const segments = routeSegments(file, /(?:^|\/)pages\//);
+    if (!segments) continue;
 
-    if (rawRoute.endsWith('/index')) {
-      rawRoute = rawRoute.slice(0, -6);
+    const last = segments[segments.length - 1].replace(/\.[mc]?[jt]sx?$/, '');
+    const routeParts = last === 'index' ? segments.slice(0, -1) : [...segments.slice(0, -1), last];
+    const routePath = segmentsToPath(routeParts);
+    if (!routePath) continue;
+
+    const absolute = path.join(cwd, file);
+    const code = (await loader.load(absolute)) ?? '';
+    const isGraphQL = isGraphQLPath(routePath);
+    const methods: HttpMethod[] = isGraphQL ? ['POST'] : detectPagesRouterMethods(code);
+    const params = pathParams(routePath);
+
+    // Pages Router expone un único handler: la inferencia se hace sobre todo el archivo.
+    const methodsMetadata: Endpoint['methodsMetadata'] = {};
+    if (!isGraphQL) {
+      for (const method of methods) {
+        const meta = await inferMetadata(code, method, absolute, loader, params);
+        if (meta) methodsMetadata[method] = meta;
+      }
     }
 
-    const cleanedPath = cleanNextPath(rawRoute);
-    const isGraphQL = cleanedPath === '/api/graphql' || cleanedPath === '/graphql' || cleanedPath.endsWith('/graphql');
-    const methods: HttpMethod[] = isGraphQL ? ['POST'] : await extractPagesRouterMethods(`${cwd}/${file}`);
-
     endpoints.push({
-      path: cleanedPath,
+      path: routePath,
       methods,
       fileType: isGraphQL ? 'graphql' : 'rest',
-      sourceFile: file.replace(/\\/g, '/'),
+      sourceFile: file,
       router: 'pages',
+      methodsMetadata: Object.keys(methodsMetadata).length > 0 ? methodsMetadata : undefined,
     });
   }
 

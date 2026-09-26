@@ -1,15 +1,22 @@
+import path from 'node:path';
 import { scanGraphQLSchema } from './parsers/graphql/index.js';
-import { scanNextRoutes } from './parsers/next/index.js';
+import { detectFrameworks, runAdapters } from './parsers/index.js';
 import type { ScanOptions, ScanResult } from './types.js';
 
 export async function scanProject(options: ScanOptions = {}): Promise<ScanResult> {
-  const cwd = options.cwd ?? process.cwd();
-  const endpoints = await scanNextRoutes({ cwd, exclude: options.exclude });
-  const graphql = await scanGraphQLSchema({ cwd, schemaPath: options.graphqlSchema, exclude: options.exclude });
+  const cwd = path.resolve(options.cwd ?? process.cwd());
+  const frameworks = !options.framework || options.framework === 'auto'
+    ? await detectFrameworks(cwd)
+    : [options.framework];
+
+  const [rest, graphql] = await Promise.all([
+    runAdapters(frameworks, { cwd, exclude: options.exclude }),
+    scanGraphQLSchema({ cwd, schemaPath: options.graphqlSchema, exclude: options.exclude }),
+  ]);
 
   return {
-    endpoints,
+    endpoints: rest.endpoints,
     graphqlOperations: graphql.operations,
-    warnings: graphql.warnings,
+    warnings: [...rest.warnings, ...graphql.warnings],
   };
 }
