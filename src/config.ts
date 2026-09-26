@@ -11,7 +11,7 @@ export const SUPPORTED_FORMATS = ['all', 'openapi', 'postman', 'insomnia'] as co
 export const SUPPORTED_GROUP_BY = ['type', 'method', 'path', 'none'] as const;
 export const SUPPORTED_SORT = ['alpha', 'none'] as const;
 
-function handleCancel<T>(value: T | symbol): asserts value is T {
+function handleCancel<T>(value: T): asserts value is Exclude<T, symbol> {
   if (isCancel(value)) {
     cancel('Operation cancelled.');
     process.exit(0);
