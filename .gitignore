@@ -13,7 +13,6 @@ dist/
 *.swp
 *.swo
 *~
-.DS_Store
 
 # Environment
 .env
