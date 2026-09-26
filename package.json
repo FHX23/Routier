@@ -1,6 +1,6 @@
 {
   "name": "routier",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Static route scanner for Next.js and GraphQL that generates OpenAPI, Postman and Insomnia collections",
   "type": "module",
   "main": "./dist/index.js",
