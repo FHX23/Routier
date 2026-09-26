@@ -73,7 +73,8 @@ function buildRestOperation(endpoint: Endpoint, method: HttpMethod, openapiPath:
   };
 
   if (parameters.length > 0) operation.parameters = parameters;
-  if (requiresAuth) operation.security = [{ bearerAuth: [] }];
+  // `security: []` declara explícitamente que el endpoint es público.
+  operation.security = requiresAuth ? [{ bearerAuth: [] }] : [];
 
   if (meta?.body && ['POST', 'PUT', 'PATCH'].includes(method)) {
     let example: unknown;
@@ -117,6 +118,7 @@ function buildGraphQLPathItem(operations: GraphQLOperation[], endpoint: Endpoint
       operationId: 'graphql',
       summary: 'GraphQL endpoint',
       tags: ['GraphQL'],
+      security: [],
       requestBody: {
         required: true,
         content: {
