@@ -1,7 +1,18 @@
 import fg from 'fast-glob';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { parse, type DefinitionNode, type FieldDefinitionNode, type ObjectTypeDefinitionNode, type TypeNode } from 'graphql';
+import {
+  parse,
+  type DefinitionNode,
+  type FieldDefinitionNode,
+  type InputObjectTypeDefinitionNode,
+  type InputObjectTypeExtensionNode,
+  type InputValueDefinitionNode,
+  type ObjectTypeDefinitionNode,
+  type ObjectTypeExtensionNode,
+  type TypeNode,
+} from 'graphql';
+import { DEFAULT_IGNORE } from '../next/index.js';
 import type { GraphQLOperation } from '../../types.js';
 
 interface GraphQLScanOptions {
@@ -9,8 +20,6 @@ interface GraphQLScanOptions {
   schemaPath?: string;
   exclude?: string[];
 }
-
-const DEFAULT_IGNORE = ['**/node_modules/**', '**/.next/**', '**/dist/**', '**/routier-exports/**'];
 
 
 interface GraphQLScanResult {
@@ -41,8 +50,9 @@ export async function scanGraphQLSchema(options: GraphQLScanOptions): Promise<Gr
     }
   }
 
+  const roots = rootTypeNames(globalDefinitions);
   for (const candidate of parsedCandidates) {
-    operations.push(...extractOperations(candidate.definitions, globalDefinitions, candidate.sourceFile));
+    operations.push(...extractOperations(candidate.definitions, globalDefinitions, candidate.sourceFile, roots));
   }
 
   return { operations, warnings };
@@ -110,18 +120,40 @@ function extractStaticSdlFromCode(content: string, sourceFile: string, warnings:
   return schemas;
 }
 
+type ObjectLike = ObjectTypeDefinitionNode | ObjectTypeExtensionNode;
+type InputObjectLike = InputObjectTypeDefinitionNode | InputObjectTypeExtensionNode;
+
+function isObjectLike(definition: DefinitionNode): definition is ObjectLike {
+  return definition.kind === 'ObjectTypeDefinition' || definition.kind === 'ObjectTypeExtension';
+}
+
+/** Nombres de los tipos raíz, respetando `schema { query: RootQuery }`. */
+function rootTypeNames(definitions: readonly DefinitionNode[]) {
+  const roots = { query: 'Query', mutation: 'Mutation' };
+  for (const definition of definitions) {
+    if (definition.kind !== 'SchemaDefinition' && definition.kind !== 'SchemaExtension') continue;
+    for (const operation of definition.operationTypes ?? []) {
+      if (operation.operation === 'query') roots.query = operation.type.name.value;
+      if (operation.operation === 'mutation') roots.mutation = operation.type.name.value;
+    }
+  }
+  return roots;
+}
+
 function extractOperations(
   definitions: readonly DefinitionNode[],
   globalDefinitions: readonly DefinitionNode[],
   sourceFile: string,
+  roots: { query: string; mutation: string },
 ): GraphQLOperation[] {
-  const objectTypes = definitions.filter((definition): definition is ObjectTypeDefinitionNode => definition.kind === 'ObjectTypeDefinition');
-  const queryType = objectTypes.find((type) => type.name.value === 'Query');
-  const mutationType = objectTypes.find((type) => type.name.value === 'Mutation');
+  const objectTypes = definitions.filter(isObjectLike);
+  const fieldsOf = (name: string) => objectTypes
+    .filter((type) => type.name.value === name)
+    .flatMap((type) => type.fields ?? []);
 
   return [
-    ...fieldsToOperations('query', queryType?.fields ?? [], globalDefinitions, sourceFile),
-    ...fieldsToOperations('mutation', mutationType?.fields ?? [], globalDefinitions, sourceFile),
+    ...fieldsToOperations('query', fieldsOf(roots.query), globalDefinitions, sourceFile),
+    ...fieldsToOperations('mutation', fieldsOf(roots.mutation), globalDefinitions, sourceFile),
   ];
 }
 
@@ -137,7 +169,9 @@ function fieldsToOperations(
       type: typeToString(argument.type),
       required: argument.type.kind === 'NonNullType',
     })) ?? [];
-    const variables = Object.fromEntries(args.map((arg) => [arg.name, sampleValueForType(arg.type)]));
+    const variables = Object.fromEntries(
+      (field.arguments ?? []).map((argument) => [argument.name.value, sampleValueForType(argument.type, globalDefinitions)]),
+    );
     const variableDefinitions = args.length > 0
       ? `(${args.map((arg) => `$${arg.name}: ${arg.type}`).join(', ')})`
       : '';
@@ -151,10 +185,10 @@ function fieldsToOperations(
 
     let selection = '';
     if (!isScalar) {
-      const objType = globalDefinitions.find(
-        (def): def is ObjectTypeDefinitionNode =>
-          def.kind === 'ObjectTypeDefinition' && def.name.value === returnTypeName
-      );
+      const objFields = globalDefinitions
+        .filter((def): def is ObjectLike => isObjectLike(def) && def.name.value === returnTypeName)
+        .flatMap((def) => def.fields ?? []);
+      const objType = objFields.length > 0 ? { fields: objFields } : undefined;
 
       if (objType) {
         const hasId = objType.fields?.some((f) => f.name.value === 'id');
@@ -197,11 +231,28 @@ function typeToString(type: TypeNode): string {
   return type.name.value;
 }
 
-function sampleValueForType(type: string): unknown {
-  const normalized = type.replace(/[!\[\]]/g, '');
-  if (normalized === 'Int' || normalized === 'Float') return 0;
-  if (normalized === 'Boolean') return true;
-  if (normalized === 'ID') return 'id';
+function sampleValueForType(type: TypeNode, definitions: readonly DefinitionNode[], depth = 0): unknown {
+  if (type.kind === 'NonNullType') return sampleValueForType(type.type, definitions, depth);
+  if (type.kind === 'ListType') return [sampleValueForType(type.type, definitions, depth)];
+
+  const name = type.name.value;
+  if (name === 'Int' || name === 'Float') return 0;
+  if (name === 'Boolean') return true;
+  if (name === 'ID') return 'id';
+  if (name === 'String') return 'string';
+
+  const enumType = definitions.find((def) => def.kind === 'EnumTypeDefinition' && def.name.value === name);
+  if (enumType && enumType.kind === 'EnumTypeDefinition') return enumType.values?.[0]?.name.value ?? 'string';
+
+  if (depth < 4) {
+    const inputFields = definitions
+      .filter((def): def is InputObjectLike => (def.kind === 'InputObjectTypeDefinition' || def.kind === 'InputObjectTypeExtension') && def.name.value === name)
+      .flatMap((def): readonly InputValueDefinitionNode[] => def.fields ?? []);
+    if (inputFields.length > 0) {
+      return Object.fromEntries(inputFields.map((field) => [field.name.value, sampleValueForType(field.type, definitions, depth + 1)]));
+    }
+  }
+
   return 'string';
 }
 
