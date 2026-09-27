@@ -1,6 +1,9 @@
 import type { JsonSchema } from '../../types.js';
 import { findMatching, parseImports, parseLiteralValue, parseStringLiteral, skipWhitespace, splitTopLevel } from './code.js';
 import type { SourceLoader } from './source.js';
+import { exampleFromSchema } from './examples.js';
+
+export { exampleFromSchema };
 
 /**
  * Intérprete estático de schemas Zod (v3 y v4). No ejecuta código: lee las
@@ -197,9 +200,28 @@ async function applyModifier(current: Interpreted, segment: Segment, ctx: Contex
       return { schema: value === undefined ? schema : { ...schema, default: value }, optional: true };
     }
     case 'int':
+    case 'safe':
       return { ...current, schema: { ...schema, type: 'integer' } };
     case 'array':
       return { ...current, schema: { type: 'array', items: schema } };
+    case 'min':
+    case 'gte':
+    case 'gt':
+    case 'max':
+    case 'lte':
+    case 'lt':
+    case 'length':
+    case 'nonempty':
+    case 'positive':
+    case 'nonnegative':
+    case 'regex':
+      return { ...current, schema: applyConstraint(schema, segment.name, args) };
+    case 'pipe': {
+      // `z.string().transform(...).pipe(z.string().datetime())`: el formato final describe mejor el valor.
+      const piped = await interpretExpression(args, ctx);
+      const format = piped?.schema.format;
+      return format && schema.type === 'string' ? { ...current, schema: { ...schema, format } } : current;
+    }
     case 'or': {
       const other = await interpretExpression(args, ctx);
       return other ? { ...current, schema: { anyOf: [schema, other.schema] } } : current;
@@ -237,6 +259,43 @@ async function applyModifier(current: Interpreted, segment: Segment, ctx: Contex
       return current;
     }
   }
+}
+
+/** Traduce min/max/length/regex/positive de Zod a las restricciones de JSON Schema según el tipo. */
+function applyConstraint(schema: JsonSchema, name: string, args: string): JsonSchema {
+  const first = splitTopLevel(args)[0]?.trim() ?? '';
+  const value = Number(first);
+  const numeric = Number.isFinite(value) && first !== '';
+  const next = { ...schema };
+
+  if (name === 'regex') {
+    const literal = /^\/((?:\\.|[^/\\])+)\/[a-z]*$/.exec(first);
+    if (literal) next.pattern = literal[1];
+    return next;
+  }
+  if (schema.type === 'string') {
+    if (name === 'nonempty') next.minLength = Math.max(next.minLength ?? 0, 1);
+    if (!numeric) return next;
+    if (name === 'min' || name === 'gte') next.minLength = value;
+    if (name === 'max' || name === 'lte') next.maxLength = value;
+    if (name === 'length') { next.minLength = value; next.maxLength = value; }
+    return next;
+  }
+  if (schema.type === 'array') {
+    if (name === 'nonempty') next.minItems = 1;
+    if (numeric && (name === 'min' || name === 'length')) next.minItems = value;
+    return next;
+  }
+  if (schema.type === 'number' || schema.type === 'integer') {
+    if (name === 'positive') next.minimum = Math.max(next.minimum ?? 1, 1);
+    if (name === 'nonnegative') next.minimum = Math.max(next.minimum ?? 0, 0);
+    if (!numeric) return next;
+    if (name === 'min' || name === 'gte') next.minimum = value;
+    if (name === 'gt') next.minimum = value + 1;
+    if (name === 'max' || name === 'lte') next.maximum = value;
+    if (name === 'lt') next.maximum = value - 1;
+  }
+  return next;
 }
 
 function mergeObjects(base: JsonSchema, extra: JsonSchema): JsonSchema {
@@ -284,6 +343,29 @@ function findTopLevelColon(text: string): number {
   return text.search(/:/);
 }
 
+const zodImportsCache = new WeakMap<SourceLoader, Map<string, Map<string, string>>>();
+
+/** Si `name` es un import con nombre desde `zod` en el archivo actual, devuelve el nombre original. */
+async function zodNamedImport(name: string, ctx: Context): Promise<string | null> {
+  let byFile = zodImportsCache.get(ctx.loader);
+  if (!byFile) {
+    byFile = new Map();
+    zodImportsCache.set(ctx.loader, byFile);
+  }
+  let imports = byFile.get(ctx.filePath);
+  if (!imports) {
+    imports = new Map();
+    const code = await ctx.loader.load(ctx.filePath);
+    for (const [local, binding] of parseImports(code ?? '')) {
+      if (/^zod(\/v\d|\/mini)?$/.test(binding.specifier) && binding.imported !== 'default' && binding.imported !== '*') {
+        imports.set(local, binding.imported);
+      }
+    }
+    byFile.set(ctx.filePath, imports);
+  }
+  return imports.get(name) ?? null;
+}
+
 /** Interpreta una expresión Zod (`z.string().email()`, `userSchema.optional()`, etc.). */
 export async function interpretExpression(expression: string, ctx: Context): Promise<Interpreted | null> {
   if (ctx.depth > MAX_DEPTH) return null;
@@ -294,7 +376,12 @@ export async function interpretExpression(expression: string, ctx: Context): Pro
   let current: Interpreted | null = null;
   const next = { ...ctx, depth: ctx.depth + 1 };
 
-  if ((segments[0].name === 'z' || segments[0].name === 'zod') && segments[0].args === null) {
+  const zodImport = segments[0].args !== null ? await zodNamedImport(segments[0].name, ctx) : null;
+  if (zodImport) {
+    // `import { object, string } from 'zod'` -> `object({...})`
+    current = await interpretBase({ name: zodImport, args: segments[0].args }, next);
+    index = 1;
+  } else if ((segments[0].name === 'z' || segments[0].name === 'zod') && segments[0].args === null) {
     index = 1;
     while (segments[index] && ['coerce', 'iso', 'string_format'].includes(segments[index].name) && segments[index].args === null) {
       index++;
@@ -418,50 +505,6 @@ async function resolveUncached(name: string, filePath: string, loader: SourceLoa
   }
 
   return null;
-}
-
-const EXAMPLE_BY_FORMAT: Record<string, unknown> = {
-  email: 'user@example.com',
-  uuid: '123e4567-e89b-12d3-a456-426614174000',
-  uri: 'https://example.com',
-  'date-time': '2024-01-01T00:00:00.000Z',
-  date: '2024-01-01',
-  time: '12:00:00',
-  ipv4: '127.0.0.1',
-  ipv6: '::1',
-};
-
-/** Genera un valor de ejemplo realista a partir de un JSON Schema inferido. */
-export function exampleFromSchema(schema: JsonSchema, depth = 0): unknown {
-  if (depth > MAX_DEPTH) return null;
-  if (schema.default !== undefined) return schema.default;
-  if (schema.enum && schema.enum.length > 0) return schema.enum[0];
-  if (schema.anyOf && schema.anyOf.length > 0) return exampleFromSchema(schema.anyOf[0], depth + 1);
-
-  switch (schema.type) {
-    case 'string':
-      return (schema.format && EXAMPLE_BY_FORMAT[schema.format]) ?? 'string';
-    case 'number':
-    case 'integer':
-      return 10;
-    case 'boolean':
-      return true;
-    case 'array':
-      return [exampleFromSchema(schema.items ?? {}, depth + 1)];
-    case 'object': {
-      if (schema.properties) {
-        return Object.fromEntries(
-          Object.entries(schema.properties).map(([key, value]) => [key, exampleFromSchema(value, depth + 1)]),
-        );
-      }
-      if (schema.additionalProperties && typeof schema.additionalProperties === 'object') {
-        return { key: exampleFromSchema(schema.additionalProperties, depth + 1) };
-      }
-      return {};
-    }
-    default:
-      return null;
-  }
 }
 
 export interface InferredBody {

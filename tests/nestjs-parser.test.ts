@@ -58,5 +58,5 @@ test('reads @Query() params and class-validator DTOs, including nested DTOs and 
 test('uses Zod schemas passed to ZodValidationPipe', async () => {
   const routes = await byPath();
   const login = routes.get('/api/v1/auth/login')!.methodsMetadata!.POST!;
-  assert.deepEqual(JSON.parse(login.body!), { email: 'user@example.com', password: 'string' });
+  assert.deepEqual(JSON.parse(login.body!), { email: 'user@example.com', password: 'Passw0rd!123' });
 });

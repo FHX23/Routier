@@ -17,9 +17,25 @@ export interface JsonSchema {
   nullable?: boolean;
   default?: unknown;
   anyOf?: JsonSchema[];
+  minLength?: number;
+  maxLength?: number;
+  pattern?: string;
+  minimum?: number;
+  maximum?: number;
+  minItems?: number;
 }
 
+/** Autenticación que exige una operación. */
+export type AuthRequirement =
+  | { type: 'bearer'; optional?: boolean }
+  | { type: 'session'; cookie: string };
+
+/** Tipo de contenido del body de una request. */
+export type BodyContentType = 'application/json' | 'multipart/form-data' | 'text/plain';
+
 export interface MethodMetadata {
+  /** Autenticación requerida (Bearer o sesión por cookie). */
+  auth?: AuthRequirement;
   /** Cabeceras leídas por el handler (`Authorization` indica autenticación Bearer). */
   headers?: string[];
   /** Parámetros de query string leídos por el handler. */
@@ -28,6 +44,8 @@ export interface MethodMetadata {
   body?: string;
   /** Schema del body inferido (por ejemplo desde Zod). */
   bodySchema?: JsonSchema;
+  /** Tipo de contenido del body (por defecto JSON). */
+  bodyContentType?: BodyContentType;
 }
 
 export interface Endpoint {
