@@ -464,7 +464,11 @@ export function resolveSchemaByName(name: string, filePath: string, loader: Sour
   let cached = cache.get(key);
   if (!cached) {
     inProgress.add(key);
-    cached = resolveUncached(name, filePath, loader, depth).finally(() => inProgress.delete(key));
+    // Un schema con nombre se resuelve siempre desde profundidad 0: el resultado se cachea y no
+    // debe depender del camino (más o menos profundo) por el que se llegó a él la primera vez.
+    // Los ciclos los corta `inProgress`.
+    void depth;
+    cached = resolveUncached(name, filePath, loader, 0).finally(() => inProgress.delete(key));
     cache.set(key, cached);
   }
   return cached;

@@ -354,6 +354,9 @@ async function trackFormData(code: string, variable: string, ctx: FlowContext, d
   for (const match of code.matchAll(new RegExp(`${expr}\\s*\\.\\s*(get|getAll|has)\\s*\\(\\s*['"\`]([\\w$.-]+)['"\`]\\s*\\)(\\s*as\\s+([\\w$]+))?`, 'g'))) {
     const isFile = match[4] === 'File' || match[4] === 'Blob' || FILE_FIELD.test(match[2]);
     const item: JsonSchema = isFile ? { type: 'string', format: 'binary' } : { type: 'string' };
+    // `(form.get('folder') as string) || 'products'`: el valor por defecto es un buen ejemplo.
+    const fallback = /^\s*\)?\s*(?:\|\||\?\?)\s*(['"`])([^'"`]*)\1/.exec(code.slice(match.index! + match[0].length));
+    if (!isFile && fallback) item.default = fallback[2];
     fields[match[2]] = match[1] === 'getAll' ? { type: 'array', items: item } : item;
   }
   if (depth < MAX_DEPTH) {
@@ -396,7 +399,13 @@ export async function inferFetchBody(handlerBody: string, ctx: FlowContext): Pro
     if (declared) {
       const type = readTypeExpression(handlerBody, declared.index + declared[0].length).replace(/\s*=[\s\S]*$/, '');
       const schema = await schemaFromType(type.trim(), ctx);
-      if (schema) return { contentType: 'application/json', schema, source: 'type' };
+      if (schema) {
+        // Casts posteriores sobre los campos (`body.role as Role`) afinan el tipo declarado.
+        const tracked = await trackValue(handlerBody, roots, ctx);
+        const refined = Object.entries(tracked?.schema.properties ?? {}).filter(([, value]) => value.enum);
+        if (refined.length > 0) schema.properties = { ...schema.properties, ...Object.fromEntries(refined) };
+        return { contentType: 'application/json', schema, source: 'type' };
+      }
     }
   }
   const tracked = await trackValue(handlerBody, roots, ctx);
