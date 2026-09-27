@@ -7,7 +7,7 @@
 
 **Routier** analiza el código fuente de tu API y genera colecciones **OpenAPI 3**, **Postman** e **Insomnia** listas para importar, sin decoradores, anotaciones ni servidor corriendo.
 
-Soporta **Next.js** (App Router y Pages Router), **Express**, **Fastify**, **NestJS** y schemas **GraphQL**. Además infiere cabeceras de autenticación, parámetros de query y bodies de ejemplo a partir de tus schemas Zod, JSON Schema y DTOs.
+Soporta **Next.js** (App Router y Pages Router), **Express**, **Fastify**, **NestJS** y schemas **GraphQL**. Además infiere la autenticación (tokens Bearer y sesiones por cookie), los parámetros de query y los bodies a partir de tus validaciones Zod, Joi, TypeBox y JSON Schema, de tus DTOs, de tus tipos TypeScript o simplemente de los campos que leen tus handlers.
 
 [Read in English](./README.md)
 
@@ -68,7 +68,7 @@ Los archivos se escriben en `./routier-exports`, dentro del proyecto analizado:
 | `routier-postman.json` | Postman → **Import** → seleccionar el archivo |
 | `routier-insomnia.json` | Insomnia → **Import** → seleccionar el archivo |
 
-Las colecciones incluyen una variable `baseUrl` y una variable `token`, que usan todas las requests que necesitan `Authorization: Bearer …`. Así las completas una sola vez.
+Las colecciones incluyen una variable `baseUrl`, una variable `token` para las requests que necesitan `Authorization: Bearer …` y una variable `session` para las sesiones por cookie (se envía como header `Cookie` con el nombre de cookie correcto). Así las completas una sola vez. Los query params opcionales vienen incluidos pero desactivados, listos para activarlos.
 
 ## Qué detecta Routier
 
@@ -76,13 +76,15 @@ El framework se detecta desde tu `package.json`. Usa `--framework` para forzar u
 
 | | Rutas | Auth y cabeceras | Query params | Body |
 | --- | --- | --- | --- | --- |
-| **Next.js** | handlers `app/**/route.ts`, `pages/api/**` (métodos inferidos de `req.method`), route groups, segmentos dinámicos y catch-all, `export { handler as GET }`, `export const { GET, POST } = handlers` | `req.headers.get()`, `headers()` de `next/headers`, `req.headers[...]` | `searchParams.get()`, `req.query` | Zod `schema.parse(await req.json())` |
-| **Express** | `app.get()`, `router.post()`, `router.route('/x').get().post()`, `app.use('/prefijo', router)` anidados entre archivos ESM y CommonJS | middlewares de auth (`requireAuth`, `passport.authenticate`, `verifyJwt`…), `req.get()`, `req.header()` | `req.query` | middlewares validadores (`validate(schema)`) y `schema.parse(req.body)` |
-| **Fastify** | `fastify.get()`, `fastify.route({ method, url })`, `register(plugin, { prefix })`, plugins en línea, `@fastify/autoload` | hooks `onRequest` / `preHandler` y `addHook` con funciones de auth | `schema.querystring`, `request.query` | `schema.body` (JSON Schema o Zod) |
-| **NestJS** | `@Controller` + `@Get/@Post/…`, `setGlobalPrefix`, versionado por URI y `@Version` | `@UseGuards(AuthGuard)`, `@ApiBearerAuth`, exclusión con `@Public()`, `@Headers('x')` | `@Query('x')`, `@Query() dto` | `@Body() dto` con DTOs de class-validator, `PartialType`/`PickType`/`OmitType`, `ZodValidationPipe` |
+| **Next.js** | handlers `app/**/route.ts`, `pages/api/**` (métodos inferidos de `req.method`), route groups, segmentos dinámicos y catch-all, `export { handler as GET }`, `export const { GET, POST } = handlers` | sesiones de next-auth (`auth()`, `getServerSession`), better-auth, Clerk, Supabase y Lucia, también a través de funciones auxiliares y de `middleware.ts`/`proxy.ts`; `req.headers.get()`, `headers()` | `searchParams.get()`, `req.query` | `await req.json()` validado con Zod, tipado (`as T`, `: T`), desestructurado o pasado a server actions; `formData()` (multipart) y `text()` |
+| **Express** | `app.get()`, `router.post()`, `router.route('/x').get().post()`, `app.use('/prefijo', router)` anidados entre archivos ESM y CommonJS, routers anónimos encadenados (`Router().use(...)`) y rutas montadas desde arrays | middlewares de auth (`requireAuth`, `passport.authenticate`, `auth.optional`…), `req.session`, `req.get()`, `req.header()` | `req.query`, también cuando se pasa a servicios | middlewares validadores con Zod o Joi (`validate({ body, query })`), uso de `req.body`, subidas con multer |
+| **Fastify** | `fastify.get()`, `fastify.route({ method, url })`, `register(plugin, { prefix })`, plugins en línea, `@fastify/autoload` (incluidos los `autohooks`) | hooks `onRequest` / `preHandler`, `addHook` con funciones de auth o verificación de sesión | `schema.querystring`, `request.query` | `schema.body` con JSON Schema, TypeBox o Zod; subidas multipart |
+| **NestJS** | `@Controller` + `@Get/@Post/…`, `setGlobalPrefix` (también desde valores por defecto de la configuración y con `exclude`), versionado por URI y `@Version` | `@UseGuards(AuthGuard)`, `@ApiBearerAuth`, exclusión con `@Public()`, `consumer.apply(AuthMiddleware).forRoutes(...)`, `@Headers('x')` | `@Query('x')`, `@Query() dto`, `@Query() query` seguido hasta los servicios | `@Body() dto` con DTOs de class-validator, `PartialType`/`PickType`/`OmitType`, `ZodValidationPipe`, subidas con `FileInterceptor` |
 | **GraphQL** | archivos `.graphql` / `.gql` y templates estáticos `gql` / `typeDefs`, `extend type`, tipos raíz personalizados | — | — | variables generadas para escalares, enums e input objects |
 
-El soporte de Zod cubre Zod 3 y 4: `z.object`, objetos anidados, arrays, enums, literales, uniones, records, `z.email()`/`z.uuid()`/`z.url()`, `.optional()`, `.nullable()`, `.default()`, `.extend()`, `.pick()`, `.omit()`, `.partial()`, y schemas importados de otros archivos (rutas relativas y alias `@/`).
+El soporte de Zod cubre Zod 3 y 4 (incluidos imports con nombre como `import { object, string } from 'zod'`): objetos anidados, arrays, enums, literales, uniones, records, `z.email()`/`z.uuid()`/`z.url()`, `.optional()`, `.nullable()`, `.default()`, `.extend()`, `.pick()`, `.omit()`, `.partial()`, y schemas importados de otros archivos (rutas relativas y alias `@/`). También se interpretan Joi (`Joi.object().keys(...)`) y TypeBox (`Type.Object(...)`), y tipos TypeScript como `Partial<Omit<T, 'id'>>`, `z.infer<typeof schema>` y los enums de Prisma.
+
+Los bodies de ejemplo respetan las validaciones que encuentra Routier (`min`/`max`, expresiones regulares, formatos, enums y valores por defecto), así que las requests generadas pasan la validación del servidor sin editarlas: por ejemplo, un patrón de RUT chileno produce `1.111.111-1` y `price: z.number().min(100)` produce `100`.
 
 Ejemplo de lo que genera Routier a partir de un handler de Next.js:
 
@@ -188,10 +190,10 @@ También se exportan `scanNextRoutes`, `scanGraphQLSchema`, `parseOpenAPI`, `gen
 
 Routier lee tu código de forma estática y nunca lo ejecuta, así que solo ve lo que está escrito de forma literal:
 
-- Se omiten las rutas cuyo path se construye en runtime (`app.get(prefix + '/x')`, bucles sobre arrays de rutas).
-- Los schemas deben estar declarados con Zod, objetos literales de JSON Schema o DTOs de class-validator. TypeBox, Joi y Yup todavía no se interpretan.
+- Se omiten las rutas cuyo path se construye en runtime (`app.get(prefix + '/x')`, tablas de rutas cargadas de otros módulos o generadas dinámicamente). Los arrays literales recorridos con `forEach` sí se soportan.
+- No se interpretan librerías de validación distintas de Zod, Joi, TypeBox, class-validator y JSON Schema (por ejemplo Yup o Valibot); en ese caso Routier usa los campos que lee tu handler.
 - Las operaciones GraphQL se leen desde SDL. Los schemas code-first (`@Resolver` de NestJS, Pothos, TypeGraphQL…) solo se detectan si el archivo `.graphql` generado está en el repositorio.
-- Los valores de ejemplo son genéricos (`"string"`, `10`, `user@example.com`), no datos reales.
+- Los valores de ejemplo cumplen las validaciones declaradas, pero no son datos reales: los IDs de registros existentes, los valores únicos y las reglas `refine()` personalizadas todavía hay que completarlos a mano.
 
 Si Routier no reconoce un patrón que usas, [abre un issue](https://github.com/FHX23/Routier/issues/new/choose) con un fragmento pequeño de código.
 
@@ -203,7 +205,8 @@ Si Routier no reconoce un patrón que usas, [abre un issue](https://github.com/F
 - [x] Configuración con `routier.json`
 - [x] Inferencia de auth, cabeceras, query params y bodies Zod
 - [x] Express, Fastify y NestJS
-- [ ] Schemas TypeBox, Joi y Yup
+- [x] Schemas Joi y TypeBox, sesiones por cookie y bodies sin librerías de validación
+- [ ] Schemas Yup y Valibot
 - [ ] Schemas de respuesta
 - [ ] GitHub Action que mantenga las colecciones actualizadas y reporte cambios de la API en los pull requests
 
