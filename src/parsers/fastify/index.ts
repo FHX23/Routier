@@ -1,6 +1,6 @@
 import fg from 'fast-glob';
 import path from 'node:path';
-import type { Endpoint, HttpMethod, JsonSchema, MethodMetadata } from '../../types.js';
+import type { AuthRequirement, Endpoint, HttpMethod, MethodMetadata } from '../../types.js';
 import type { AdapterOptions, AdapterResult } from '../index.js';
 import {
   findFunctionBody,
@@ -11,9 +11,11 @@ import {
   parseStringLiteral,
   splitTopLevel,
 } from '../shared/code.js';
-import { AUTH_MIDDLEWARE, inferHandlerMetadata, normalizeRoutePath, routeParamsOf } from '../shared/handler.js';
+import { AUTH_MIDDLEWARE, inferHandlerMetadata, isAuthMiddleware, normalizeRoutePath, routeParamsOf } from '../shared/handler.js';
 import { SourceLoader } from '../shared/source.js';
-import { exampleFromSchema, inferZodSchemaByName } from '../shared/zod.js';
+import { AuthDetector } from '../shared/auth.js';
+import { applyBody } from '../shared/metadata.js';
+import { interpretValidatorObject, resolveExpression } from '../shared/schemas.js';
 import { SOURCE_GLOB, SOURCE_IGNORE } from '../express/index.js';
 
 const VERBS: Record<string, HttpMethod[]> = {
@@ -50,6 +52,20 @@ interface PluginRegister {
   targets: { file: string; prefix: string }[];
 }
 
+interface AuthScope {
+  range: Range;
+  auth: AuthRequirement;
+  /** Rutas exceptuadas dentro del hook (`if (request.url.startsWith('/api/auth/login')) return`). */
+  exempt: string[];
+}
+
+/** Hooks de un archivo `autohooks` de @fastify/autoload: aplican a su carpeta (y subcarpetas con cascadeHooks). */
+interface DirectoryHooks {
+  dir: string;
+  cascade: boolean;
+  file: string;
+}
+
 interface FileInfo {
   file: string;
   absolute: string;
@@ -57,7 +73,7 @@ interface FileInfo {
   registrations: Registration[];
   registers: PluginRegister[];
   /** Ámbitos (rango o archivo completo) con un hook de autenticación (`addHook('onRequest', fastify.authenticate)`). */
-  authScopes: Range[];
+  authScopes: AuthScope[];
 }
 
 const HOOK_KEYS = ['onRequest', 'preHandler', 'preValidation', 'preParsing'];
@@ -65,7 +81,7 @@ const HOOK_KEYS = ['onRequest', 'preHandler', 'preValidation', 'preParsing'];
 function hookRequiresAuth(props: Map<string, string>): boolean {
   return HOOK_KEYS.some((key) => {
     const value = props.get(key);
-    return value !== undefined && AUTH_MIDDLEWARE.test(value);
+    return value !== undefined && isAuthMiddleware(value);
   });
 }
 
@@ -79,7 +95,15 @@ function methodsFrom(value: string | undefined): HttpMethod[] {
     .filter((item): item is HttpMethod => ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'].includes(item));
 }
 
-async function analyseFile(file: string, absolute: string, code: string, loader: SourceLoader, cwd: string): Promise<FileInfo> {
+async function analyseFile(
+  file: string,
+  absolute: string,
+  code: string,
+  loader: SourceLoader,
+  cwd: string,
+  sessionCookie: () => Promise<string>,
+  directoryHooks: DirectoryHooks[],
+): Promise<FileInfo> {
   const info: FileInfo = { file, absolute, code, registrations: [], registers: [], authScopes: [] };
   const imports = parseImports(code);
 
@@ -93,9 +117,13 @@ async function analyseFile(file: string, absolute: string, code: string, loader:
     const position = match.index!;
 
     if (verb === 'addHook') {
-      if (args.length >= 2 && HOOK_KEYS.includes(parseStringLiteral(args[0]) ?? '') && AUTH_MIDDLEWARE.test(args[1])) {
-        const scope = innermostRange(info, position) ?? { start: 0, end: code.length };
-        info.authScopes.push(scope);
+      const hook = args[1] ?? '';
+      const isSession = /\b(?:req|request)\s*\.\s*session\b/.test(hook);
+      if (args.length >= 2 && HOOK_KEYS.includes(parseStringLiteral(args[0]) ?? '') && (AUTH_MIDDLEWARE.test(hook) || isSession)) {
+        const range = innermostRange(info, position) ?? { start: 0, end: code.length };
+        const auth: AuthRequirement = isSession ? { type: 'session', cookie: await sessionCookie() } : { type: 'bearer' };
+        const exempt = [...hook.matchAll(/(['"`])(\/[^'"`\s]*)\1/g)].map((m) => m[2]);
+        info.authScopes.push({ range, auth, exempt });
       }
       continue;
     }
@@ -125,7 +153,9 @@ async function analyseFile(file: string, absolute: string, code: string, loader:
       if (binding?.specifier === '@fastify/autoload' || binding?.specifier === 'fastify-autoload') {
         // Autoload recibe el prefijo en `options: { prefix }`.
         const autoloadPrefix = parseStringLiteral(objectLiteralProps(opts.get('options') ?? '{}').get('prefix') ?? '') ?? '';
-        register.targets.push(...(await autoloadTargets(opts, absolute, cwd, normalizeRoutePath(prefix, autoloadPrefix))));
+        const loaded = await autoloadTargets(opts, absolute, cwd, normalizeRoutePath(prefix, autoloadPrefix));
+        register.targets.push(...loaded.targets);
+        directoryHooks.push(...loaded.hooks);
         register.prefix = '';
       } else if (/^(async\b|function\b|\()/.test(pluginArg)) {
         const argStart = code.indexOf(pluginArg, open);
@@ -177,64 +207,44 @@ function innermostRange(info: FileInfo, position: number): Range | undefined {
 async function autoloadTargets(opts: Map<string, string>, absolute: string, cwd: string, prefix: string) {
   const dirExpression = opts.get('dir') ?? '';
   const literals = [...dirExpression.matchAll(/(['"`])([^'"`]+)\1/g)].map((match) => match[2]);
-  if (literals.length === 0) return [];
+  if (literals.length === 0) return { targets: [], hooks: [] };
   const dir = path.resolve(path.dirname(absolute), ...literals);
   const routeParams = opts.get('routeParams') === 'true';
 
+  const autoHooks = opts.get('autoHooks') === 'true';
+  const cascade = opts.get('cascadeHooks') === 'true';
   const files = await fg([SOURCE_GLOB], { cwd: dir, ignore: SOURCE_IGNORE });
-  return files.map((file) => {
+  const relative = (file: string) => path.relative(cwd, path.join(dir, file)).replace(/\\/g, '/');
+  const isHooks = (file: string) => /(^|\/)autohooks\.[mc]?[jt]s$/.test(file);
+
+  const hooks: DirectoryHooks[] = autoHooks
+    ? files.filter(isHooks).map((file) => ({ file: relative(file), dir: path.posix.dirname(relative(file)), cascade }))
+    : [];
+  const targets = files.filter((file) => !(autoHooks && isHooks(file))).map((file) => {
     const folders = path.posix.dirname(file).split('/').filter((segment) => segment && segment !== '.');
     const segments = folders.map((segment) => (routeParams && segment.startsWith('_') ? `:${segment.slice(1)}` : segment));
-    return {
-      file: path.relative(cwd, path.join(dir, file)).replace(/\\/g, '/'),
-      prefix: normalizeRoutePath(prefix, ...segments),
-    };
+    return { file: relative(file), prefix: normalizeRoutePath(prefix, ...segments) };
   });
+  return { targets, hooks };
 }
 
-/** Devuelve el texto del objeto literal asignado a `name` (`const x = {...} as const`), o `null`. */
-function objectLiteralOf(code: string, name: string): string | null {
-  const declaration = new RegExp(`(?:const|let|var)\\s+${name.replace(/\$/g, '\\$')}\\s*(?::[^=]+)?=\\s*\\{`).exec(code);
-  if (!declaration) return null;
-  const open = declaration.index + declaration[0].length - 1;
-  const close = findMatching(code, open);
-  return close === -1 ? null : code.slice(open, close + 1);
-}
-
-/** Convierte `schema: { body, querystring, headers }` (JSON Schema literal o schema Zod) en metadatos. */
+/** Convierte `schema: { body, querystring, headers, consumes }` (JSON Schema, TypeBox, Zod o Joi) en metadatos. */
 async function metadataFromSchema(schemaText: string | undefined, info: FileInfo, loader: SourceLoader): Promise<MethodMetadata> {
   const meta: MethodMetadata = {};
   if (!schemaText) return meta;
 
-  const resolve = (value: string) => (/^[\w$]+$/.test(value.trim()) ? objectLiteralOf(info.code, value.trim()) ?? value : value);
-  const text = resolve(schemaText);
-
-  const props = objectLiteralProps(text);
-  const bodyText = props.get('body');
-  if (bodyText) {
-    let schema: JsonSchema | null = null;
-    const literal = parseLiteralValue(resolve(bodyText));
-    if (literal && typeof literal === 'object') {
-      schema = literal as JsonSchema;
-    } else if (/^[\w$]+$/.test(bodyText)) {
-      schema = (await inferZodSchemaByName(bodyText, info.absolute, loader))?.schema ?? null;
-    }
-    if (schema) {
-      meta.bodySchema = schema;
-      meta.body = JSON.stringify(exampleFromSchema(schema), null, 2);
-    }
+  const validator = await interpretValidatorObject(schemaText, info.absolute, loader);
+  const resolved = await resolveExpression(schemaText, info.absolute, loader);
+  const multipart = /multipart\/form-data/.test(resolved?.text ?? '');
+  if (validator?.body || multipart) {
+    applyBody(meta, {
+      contentType: multipart ? 'multipart/form-data' : 'application/json',
+      schema: validator?.body ?? { type: 'object', properties: { file: { type: 'string', format: 'binary' } } },
+    });
   }
-
-  const keysOf = (value: string | undefined) => {
-    const literal = value ? parseLiteralValue(resolve(value)) : undefined;
-    const properties = literal && typeof literal === 'object' ? (literal as JsonSchema).properties : undefined;
-    return properties ? Object.keys(properties) : [];
-  };
-  const query = keysOf(props.get('querystring') ?? props.get('query'));
-  if (query.length > 0) meta.query = query;
-  const headers = keysOf(props.get('headers')).map((name) => (name.toLowerCase() === 'authorization' ? 'Authorization' : name));
+  if (validator?.query?.length) meta.query = validator.query;
+  const headers = (validator?.headers ?? []).map((name) => (name.toLowerCase() === 'authorization' ? 'Authorization' : name));
   if (headers.length > 0) meta.headers = headers;
-
   return meta;
 }
 
@@ -249,9 +259,10 @@ function mergeMetadata(base: MethodMetadata | undefined, extra: MethodMetadata):
   const query = union(base?.query, extra.query);
   if (headers.length > 0) merged.headers = headers;
   if (query.length > 0) merged.query = query;
-  if (extra.body) {
+  if (extra.bodySchema || extra.bodyContentType) {
     merged.body = extra.body;
     merged.bodySchema = extra.bodySchema;
+    merged.bodyContentType = extra.bodyContentType;
   }
   return Object.keys(merged).length > 0 ? merged : undefined;
 }
@@ -259,6 +270,10 @@ function mergeMetadata(base: MethodMetadata | undefined, extra: MethodMetadata):
 export async function scanFastifyRoutes(options: AdapterOptions): Promise<AdapterResult> {
   const cwd = path.resolve(options.cwd);
   const loader = new SourceLoader(cwd);
+  const authDetector = new AuthDetector(cwd, loader);
+  const sessionCookie = () => authDetector.cookieFor('node-session');
+  const directoryHooks: DirectoryHooks[] = [];
+  const hookScopes = new Map<string, AuthScope[]>();
   const files = new Map<string, FileInfo>();
 
   const sourceFiles = await fg([SOURCE_GLOB], { cwd, ignore: [...SOURCE_IGNORE, ...(options.exclude ?? [])] });
@@ -266,9 +281,23 @@ export async function scanFastifyRoutes(options: AdapterOptions): Promise<Adapte
     const absolute = path.join(cwd, file);
     const code = await loader.load(absolute);
     if (!code || !/\bfastify\b|FastifyInstance|FastifyPlugin/i.test(code)) continue;
-    const info = await analyseFile(file, absolute, code, loader, cwd);
+    const info = await analyseFile(file, absolute, code, loader, cwd, sessionCookie, directoryHooks);
     if (info.registrations.length > 0 || info.registers.length > 0) files.set(file, info);
+    if (info.authScopes.length > 0) hookScopes.set(file, info.authScopes);
   }
+
+  /** Auth heredada de los archivos autohooks de las carpetas que contienen a `file`. */
+  const directoryAuth = (file: string, routePath: string): AuthRequirement | undefined => {
+    for (const hooks of directoryHooks) {
+      const inside = hooks.cascade ? file.startsWith(`${hooks.dir}/`) : path.posix.dirname(file) === hooks.dir;
+      if (!inside) continue;
+      for (const scope of hookScopes.get(hooks.file) ?? []) {
+        if (scope.exempt.some((prefix) => routePath.startsWith(prefix))) continue;
+        return scope.auth;
+      }
+    }
+    return undefined;
+  };
 
   // Prefijo local: suma de los plugins en línea que envuelven la posición.
   const localPrefix = (info: FileInfo, position: number) => info.registers
@@ -303,7 +332,7 @@ export async function scanFastifyRoutes(options: AdapterOptions): Promise<Adapte
   const endpoints = new Map<string, Endpoint>();
   for (const info of files.values()) {
     for (const registration of info.registrations) {
-      const scopedAuth = info.authScopes.some((scope) => scope.start <= registration.position && registration.position <= scope.end);
+      const scoped = info.authScopes.find((scope) => scope.range.start <= registration.position && registration.position <= scope.range.end);
       const schemaMeta = await metadataFromSchema(registration.schema, info, loader);
 
       for (const base of filePrefixes(info.file)) {
@@ -321,9 +350,12 @@ export async function scanFastifyRoutes(options: AdapterOptions): Promise<Adapte
             method,
             handlers: registration.handlers,
             routeParams: routeParamsOf(routePath),
-            requiresAuth: registration.auth || scopedAuth,
+            inheritedAuth: registration.auth
+              ? { type: 'bearer' }
+              : scoped && !scoped.exempt.some((prefix) => routePath.startsWith(prefix)) ? scoped.auth : directoryAuth(info.file, routePath),
+            authDetector,
           });
-          const meta = mergeMetadata(inferred, ['POST', 'PUT', 'PATCH'].includes(method) ? schemaMeta : { ...schemaMeta, body: undefined, bodySchema: undefined });
+          const meta = mergeMetadata(inferred, ['POST', 'PUT', 'PATCH'].includes(method) ? schemaMeta : { ...schemaMeta, body: undefined, bodySchema: undefined, bodyContentType: undefined });
           if (meta) endpoint.methodsMetadata = { ...endpoint.methodsMetadata, [method]: meta };
         }
       }

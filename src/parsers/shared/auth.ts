@@ -20,7 +20,8 @@ const SESSION_PATTERNS: [RegExp, SessionLibrary][] = [
   [/\bsupabase\s*\.\s*auth\s*\.\s*getUser\s*\(/, 'supabase'],
   [/\bvalidateRequest\s*\(\s*\)/, 'lucia'],
   [/\bgetIronSession\s*\(/, 'iron-session'],
-  [/\b(?:req|request)\s*\.\s*session\s*(?:\??\.\s*(?:user|userId|passport)|\s*\)|\s*&&)/, 'node-session'],
+  // Solo cuando se verifica la sesión (no cuando se asigna, como en un login).
+  [/(?:!\s*|if\s*\(\s*)(?:req|request)\s*\.\s*session\b|(?:req|request)\s*\.\s*session\s*\??\.\s*(?:user|userId|passport)\b(?!\s*=[^=])\s*(?:\)|&&|\|\||===|!==|\?\?)/, 'node-session'],
 ];
 
 /** `auth()` de next-auth v5 o Clerk: solo cuenta si `auth` es un import, no una variable cualquiera. */

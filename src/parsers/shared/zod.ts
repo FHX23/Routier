@@ -35,7 +35,7 @@ const STRING_FORMATS: Record<string, string> = {
 
 const IGNORED_RECEIVERS = new Set(['JSON', 'Date', 'Number', 'Math', 'URL', 'Intl', 'BigInt']);
 
-interface Segment {
+export interface Segment {
   name: string;
   args: string | null;
 }
@@ -51,7 +51,7 @@ interface Context {
   depth: number;
 }
 
-function parseChain(expression: string): Segment[] | null {
+export function parseChain(expression: string): Segment[] | null {
   const code = expression.trim();
   const segments: Segment[] = [];
   let i = 0;
@@ -413,7 +413,7 @@ export async function interpretExpression(expression: string, ctx: Context): Pro
 }
 
 /** Lee una expresión desde `start` hasta el fin de la sentencia (permite cadenas en varias líneas). */
-function readExpression(code: string, start: number): string {
+export function readExpression(code: string, start: number): string {
   for (let i = start; i < code.length; i++) {
     const char = code[i];
     if (char === '"' || char === "'" || char === '`') {

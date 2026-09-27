@@ -1,0 +1,1 @@
+{ "name": "fastify-patterns", "version": "1.0.0", "dependencies": { "fastify": "^5.0.0", "@fastify/autoload": "^6.0.0", "@fastify/session": "^11.0.0", "@fastify/type-provider-typebox": "^6.0.0" } }

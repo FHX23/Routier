@@ -39,7 +39,7 @@ test('detects authentication from route hooks, scoped addHook and header reads',
   const routes = await byPath();
 
   assert.deepEqual(routes.get('/api/users/:id')?.methodsMetadata?.PATCH?.headers, ['Authorization']);
-  assert.deepEqual(routes.get('/admin/stats')?.methodsMetadata?.GET, { headers: ['Authorization'], query: ['range'] });
+  assert.deepEqual(routes.get('/admin/stats')?.methodsMetadata?.GET, { auth: { type: 'bearer' }, headers: ['Authorization'], query: ['range'] });
   assert.deepEqual(routes.get('/v1/items/:id')?.methodsMetadata?.DELETE?.headers, ['Authorization']);
   assert.equal(routes.get('/health')?.methodsMetadata, undefined);
 });

@@ -221,6 +221,8 @@ export function generateOpenAPI(scan: ScanResult, options: OpenAPIOptions) {
     paths[openapiPath] = pathItem;
 
     for (const method of endpoint.methods) {
+      // Si dos archivos declaran el mismo método y path (controladores alternativos), gana el primero.
+      if (pathItem[method.toLowerCase()]) continue;
       const { operation } = buildRestOperation(endpoint, method, openapiPath, usedIds, security);
       operation.tags.forEach((tag: string) => tags.add(tag));
       pathItem[method.toLowerCase()] = operation;

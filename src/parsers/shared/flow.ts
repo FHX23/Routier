@@ -61,6 +61,16 @@ function escape(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\\\./g, '\\s*\\??\\.\\s*');
 }
 
+/** Identificador corto de un fragmento de código (hash FNV-1a). */
+function codeId(code: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < code.length; i++) {
+    hash ^= code.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `${code.length}:${(hash >>> 0).toString(36)}`;
+}
+
 /** El valor termina ahí (no es `expr.campo` ni `expr(...)`). */
 const END = String.raw`(?=\s*\)?\s*(?:as\b|[;\n,)}]|$))`;
 
@@ -187,7 +197,8 @@ async function collect(code: string, roots: Root[], tree: FieldNode, ctx: FlowCo
   const queue = [...roots];
   while (queue.length > 0) {
     const root = queue.shift()!;
-    const key = `${ctx.filePath}|${root.expr}|${root.path.join('.')}`;
+    // Dos funciones del mismo archivo pueden llamar igual a su parámetro: la clave incluye el fragmento.
+    const key = `${ctx.filePath}|${codeId(code)}|${root.expr}|${root.path.join('.')}`;
     if (seen.has(key)) continue;
     seen.add(key);
     const expr = escape(root.expr);
@@ -237,7 +248,8 @@ async function collect(code: string, roots: Root[], tree: FieldNode, ctx: FlowCo
     }
 
     // Accesos: expr.a, expr?.a, expr['a'], expr.a.b
-    for (const match of code.matchAll(new RegExp(`(?<![\\w$.])${expr}((?:\\s*\\??\\.\\s*[A-Za-z_$][\\w$]*|\\s*\\[\\s*['"\`][\\w$-]+['"\`]\\s*\\])+)(\\s*\\()?`, 'g'))) {
+    // Precedido por algo que no sea identificador ni acceso a miembro (se permite el spread `...expr`).
+    for (const match of code.matchAll(new RegExp(`(?<=^|[^\\w$.]|\\.\\.\\.)${expr}((?:\\s*\\??\\.\\s*[A-Za-z_$][\\w$]*|\\s*\\[\\s*['"\`][\\w$-]+['"\`]\\s*\\])+)(\\s*\\()?`, 'g'))) {
       const chain = [...match[1].matchAll(/[A-Za-z_$][\w$]*|['"`]([\w$-]+)['"`]/g)].map((m) => m[1] ?? m[0]);
       if (match[2]) chain.pop(); // el último elemento es un método llamado
       const fields: string[] = [];
@@ -245,7 +257,13 @@ async function collect(code: string, roots: Root[], tree: FieldNode, ctx: FlowCo
         if (NOT_FIELDS.has(part)) break;
         fields.push(part);
       }
-      if (fields.length > 0) nodeAt(here, fields);
+      if (fields.length > 0) {
+        nodeAt(here, fields);
+        // `req.body.article` también se rastrea (alias, llamadas a servicios, spreads).
+        if (fields.length <= 2 && root.path.length < 3) {
+          queue.push({ expr: `${root.expr}.${fields.join('.')}`, path: [...root.path, ...fields] });
+        }
+      }
     }
 
     // Validación: schema.parse(expr) / schema.safeParse({ ...expr, id })

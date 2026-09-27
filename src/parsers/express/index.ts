@@ -2,8 +2,9 @@ import fg from 'fast-glob';
 import path from 'node:path';
 import type { Endpoint, HttpMethod } from '../../types.js';
 import type { AdapterOptions, AdapterResult } from '../index.js';
-import { findMatching, parseImports, parseStringLiteral, resolveExportedLocal, splitTopLevel } from '../shared/code.js';
-import { AUTH_MIDDLEWARE, inferHandlerMetadata, normalizeRoutePath, routeParamsOf } from '../shared/handler.js';
+import { findMatching, objectLiteralProps, parseImports, parseStringLiteral, resolveExportedLocal, splitTopLevel } from '../shared/code.js';
+import { AuthDetector } from '../shared/auth.js';
+import { inferHandlerMetadata, isAuthMiddleware, normalizeRoutePath, routeParamsOf } from '../shared/handler.js';
 import { SourceLoader } from '../shared/source.js';
 import { DEFAULT_IGNORE } from '../next/index.js';
 
@@ -79,6 +80,114 @@ function readChain(code: string, index: number): { verb: string; args: string[] 
   return chain;
 }
 
+/** Registra una llamada `receiver.verb(args)`; `after` es el índice tras su `)` (para cadenas `.route()`). */
+function handleCall(info: FileInfo, receiver: string, verb: string, args: string[], after: number) {
+  const { code } = info;
+  if (verb === 'route') {
+    const paths = args[0] ? pathsFromArg(args[0]) : null;
+    if (!paths) return;
+    for (const link of readChain(code, after)) {
+      const methods = VERBS[link.verb];
+      if (!methods || link.args.length === 0) continue;
+      for (const routePath of paths) pushTo(info.registrations, receiver, { methods, path: routePath, handlers: link.args });
+    }
+    return;
+  }
+
+  if (verb === 'use') {
+    if (args.length === 0) return;
+    const prefix = pathsFromArg(args[0]);
+    pushTo(info.mounts, receiver, { prefix: prefix?.[0] ?? '', args: prefix ? args.slice(1) : args });
+    return;
+  }
+
+  // Registro de ruta: requiere un path literal y al menos un handler (descarta `map.get('/x')` o `app.get('env')`).
+  if (!VERBS[verb] || args.length < 2) return;
+  const paths = pathsFromArg(args[0]);
+  if (!paths || !paths.every((p) => p.startsWith('/') || p === '*')) return;
+  // `app.options('*', cors())` es el preflight de CORS, no un endpoint de la API.
+  if (verb === 'options' && paths.every((p) => p === '*' || p === '/*')) return;
+  for (const routePath of paths) {
+    pushTo(info.registrations, receiver, { methods: VERBS[verb], path: routePath, handlers: args.slice(1) });
+  }
+}
+
+const ROUTER_CALL = /(?:\bexpress\s*\.\s*Router|(?<![\w$.])Router|\bexpress|\bnew\s+Router)\s*\(/g;
+const CHAIN_VERBS = new Set(['get', 'post', 'put', 'patch', 'delete', 'head', 'options', 'all', 'use', 'route']);
+
+/**
+ * Routers creados en una expresión y usados en cadena: `const api = Router().use(a).use(b)`,
+ * `export default Router().use('/api', api)`, `module.exports = express.Router().get(...)`.
+ */
+function analyseRouterExpressions(info: FileInfo) {
+  const { code } = info;
+  for (const match of code.matchAll(ROUTER_CALL)) {
+    const open = match.index! + match[0].length - 1;
+    const close = findMatching(code, open);
+    if (close === -1) continue;
+    const chain = readChain(code, close + 1);
+    const before = code.slice(Math.max(0, match.index! - 120), match.index!);
+
+    let owner: string;
+    const assigned = /(?:const|let|var)\s+([\w$]+)\s*(?::[^=]+)?=\s*$/.exec(before);
+    if (assigned) owner = assigned[1];
+    else if (/(?:export\s+default|module\.exports\s*=)\s*$/.test(before)) owner = DEFAULT_NODE;
+    else if (chain.length > 0) owner = `#anon@${match.index}`;
+    else continue;
+
+    info.routers.add(owner);
+    // Los eslabones se procesan en orden, con la posición real de cada uno para `.route()`.
+    let cursor = close + 1;
+    for (const link of chain) {
+      const linkStart = code.indexOf(`.${link.verb}`, cursor) === -1 ? cursor : code.indexOf(link.verb, cursor);
+      const linkOpen = code.indexOf('(', linkStart);
+      const linkClose = findMatching(code, linkOpen);
+      cursor = linkClose + 1;
+      if (!CHAIN_VERBS.has(link.verb)) break;
+      if (link.verb === 'route') {
+        handleCall(info, owner, 'route', link.args, cursor);
+        break; // los eslabones siguientes pertenecen a la ruta
+      }
+      handleCall(info, owner, link.verb, link.args, cursor);
+    }
+  }
+}
+
+/**
+ * Montajes declarados en un array y recorridos con forEach:
+ * `const routes = [{ path: '/auth', route: authRoute }]; routes.forEach((r) => router.use(r.path, r.route))`.
+ */
+function analyseMountArrays(info: FileInfo) {
+  const { code } = info;
+  const loop = /([\w$]+)\s*\.\s*forEach\s*\(\s*(?:\(\s*([\w$]+)\s*\)|([\w$]+))\s*=>/g;
+  for (const match of code.matchAll(loop)) {
+    const [, arrayName] = match;
+    const param = match[2] ?? match[3];
+    const body = code.slice(match.index! + match[0].length, match.index! + match[0].length + 400);
+    const use = new RegExp(`([\\w$]+)\\s*\\.\\s*use\\s*\\(\\s*${param}\\s*\\.\\s*([\\w$]+)\\s*,\\s*${param}\\s*\\.\\s*([\\w$]+)\\s*\\)`).exec(body);
+    if (!use) continue;
+    const [, receiver, pathKey, routeKey] = use;
+
+    const declaration = new RegExp(`(?:const|let|var)\\s+${arrayName}\\s*(?::[^=]+)?=\\s*\\[`).exec(code);
+    if (!declaration) continue;
+    const open = declaration.index + declaration[0].length - 1;
+    const close = findMatching(code, open);
+    if (close === -1) continue;
+    for (const item of splitTopLevel(code.slice(open + 1, close))) {
+      const props = objectLiteralProps(item);
+      const prefix = parseStringLiteral(props.get(pathKey) ?? '');
+      const route = props.get(routeKey)?.trim();
+      if (prefix === null || !route) continue;
+      pushTo(info.mounts, receiver, { prefix, args: [route] });
+    }
+    // El `router.use(r.path, r.route)` genérico ya no aporta nada.
+    const mounts = info.mounts.get(receiver) ?? [];
+    info.mounts.set(receiver, mounts.filter((mount) => !mount.args.some((arg) => arg.trim().startsWith(`${param}.`))));
+  }
+}
+
+export const DEFAULT_NODE = '#default';
+
 export function analyseExpressFile(file: string, absolute: string, code: string): FileInfo {
   const info: FileInfo = { file, absolute, code, routers: new Set(), registrations: new Map(), mounts: new Map() };
 
@@ -91,35 +200,11 @@ export function analyseExpressFile(file: string, absolute: string, code: string)
     const open = match.index! + match[0].length - 1;
     const close = findMatching(code, open);
     if (close === -1) continue;
-    const args = splitTopLevel(code.slice(open + 1, close));
-
-    if (verb === 'route') {
-      const paths = args[0] ? pathsFromArg(args[0]) : null;
-      if (!paths) continue;
-      for (const link of readChain(code, close + 1)) {
-        const methods = VERBS[link.verb];
-        if (!methods || link.args.length === 0) continue;
-        for (const routePath of paths) pushTo(info.registrations, receiver, { methods, path: routePath, handlers: link.args });
-      }
-      continue;
-    }
-
-    if (verb === 'use') {
-      if (args.length === 0) continue;
-      const prefix = pathsFromArg(args[0]);
-      pushTo(info.mounts, receiver, { prefix: prefix?.[0] ?? '', args: prefix ? args.slice(1) : args });
-      continue;
-    }
-
-    // Registro de ruta: requiere un path literal y al menos un handler (descarta `map.get('/x')` o `app.get('env')`).
-    if (args.length < 2) continue;
-    const paths = pathsFromArg(args[0]);
-    if (!paths || !paths.every((p) => p.startsWith('/') || p === '*')) continue;
-    for (const routePath of paths) {
-      pushTo(info.registrations, receiver, { methods: VERBS[verb], path: routePath, handlers: args.slice(1) });
-    }
+    handleCall(info, receiver, verb, splitTopLevel(code.slice(open + 1, close)), close + 1);
   }
 
+  analyseRouterExpressions(info);
+  analyseMountArrays(info);
   return info;
 }
 
@@ -173,6 +258,8 @@ async function resolveMountTarget(
 
   // Una fábrica (`createUsersRouter(db)`) monta los routers que declara su módulo.
   if (!callee && imported !== '*') {
+    // `export default Router().use(...)`: el router anónimo exportado.
+    if (imported === 'default' && targetInfo.routers.has(DEFAULT_NODE)) return [nodeId(targetInfo.file, DEFAULT_NODE)];
     const local = resolveExportedLocal(targetInfo.code, imported);
     if (local && (targetInfo.routers.has(local) || targetInfo.registrations.has(local) || targetInfo.mounts.has(local))) {
       return [nodeId(targetInfo.file, local)];
@@ -184,6 +271,7 @@ async function resolveMountTarget(
 export async function scanExpressRoutes(options: AdapterOptions): Promise<AdapterResult> {
   const cwd = path.resolve(options.cwd);
   const loader = new SourceLoader(cwd);
+  const authDetector = new AuthDetector(cwd, loader);
   const warnings: string[] = [];
   const files = new Map<string, FileInfo>();
 
@@ -214,7 +302,7 @@ export async function scanExpressRoutes(options: AdapterOptions): Promise<Adapte
           const resolved = await resolveMountTarget(arg, info, files, loader, cwd);
           if (resolved.length > 0) {
             targets.push(...resolved);
-          } else if (AUTH_MIDDLEWARE.test(arg.split('(')[0])) {
+          } else if (isAuthMiddleware(arg.split('(')[0])) {
             edgeAuth = true;
           }
         }
@@ -283,7 +371,8 @@ export async function scanExpressRoutes(options: AdapterOptions): Promise<Adapte
               method,
               handlers: registration.handlers,
               routeParams: routeParamsOf(routePath),
-              requiresAuth: placement.auth,
+              inheritedAuth: placement.auth ? { type: 'bearer' } : undefined,
+              authDetector,
             });
             if (meta) endpoint.methodsMetadata = { ...endpoint.methodsMetadata, [method]: meta };
           }
