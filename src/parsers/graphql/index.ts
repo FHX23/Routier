@@ -240,6 +240,16 @@ function sampleValueForType(type: TypeNode, definitions: readonly DefinitionNode
   if (name === 'Boolean') return true;
   if (name === 'ID') return 'id';
   if (name === 'String') return 'string';
+  // Scalars personalizados habituales (graphql-scalars, Prisma, etc.)
+  if (/^(DateTime|Timestamp|ISODateTime|Instant)$/i.test(name)) return '2024-01-01T00:00:00.000Z';
+  if (/^(Date|LocalDate)$/i.test(name)) return '2024-01-01';
+  if (/^(Time|LocalTime)$/i.test(name)) return '12:00:00';
+  if (/^(JSON|JSONObject|Json)$/.test(name)) return {};
+  if (/^(UUID|GUID)$/i.test(name)) return '123e4567-e89b-12d3-a456-426614174000';
+  if (/^(Email|EmailAddress)$/i.test(name)) return 'user@example.com';
+  if (/^(URL|URI)$/i.test(name)) return 'https://example.com';
+  if (/^(BigInt|Long|PositiveInt|NonNegativeInt)$/i.test(name)) return 1;
+  if (/^(Decimal|Money|PositiveFloat)$/i.test(name)) return 1.5;
 
   const enumType = definitions.find((def) => def.kind === 'EnumTypeDefinition' && def.name.value === name);
   if (enumType && enumType.kind === 'EnumTypeDefinition') return enumType.values?.[0]?.name.value ?? 'string';

@@ -458,13 +458,19 @@ export function resolveSchemaByName(name: string, filePath: string, loader: Sour
     schemaCache.set(loader, cache);
   }
   const key = `${filePath}#${name}`;
+  // Un schema que se referencia a sí mismo (z.lazy, imports circulares) esperaría su propia
+  // promesa y nunca se resolvería: mientras está en curso, la referencia recursiva vale null.
+  if (inProgress.has(key)) return Promise.resolve(null);
   let cached = cache.get(key);
   if (!cached) {
-    cached = resolveUncached(name, filePath, loader, depth);
+    inProgress.add(key);
+    cached = resolveUncached(name, filePath, loader, depth).finally(() => inProgress.delete(key));
     cache.set(key, cached);
   }
   return cached;
 }
+
+const inProgress = new Set<string>();
 
 async function resolveUncached(name: string, filePath: string, loader: SourceLoader, depth: number): Promise<JsonSchema | null> {
   if (depth > MAX_DEPTH || IGNORED_RECEIVERS.has(name)) return null;

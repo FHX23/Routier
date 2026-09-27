@@ -4,7 +4,9 @@ import type { Endpoint, HttpMethod, MethodMetadata } from '../../types.js';
 import { findFunctionBody } from '../shared/code.js';
 import { inferHeaders, inferQueryParams } from '../shared/request.js';
 import { SourceLoader } from '../shared/source.js';
-import { inferZodBody } from '../shared/zod.js';
+import { AuthDetector } from '../shared/auth.js';
+import { inferFetchBody, inferNodeBody } from '../shared/flow.js';
+import { applyBody } from '../shared/metadata.js';
 
 interface NextScanOptions {
   cwd?: string;
@@ -96,27 +98,40 @@ function detectPagesRouterMethods(code: string): HttpMethod[] {
   return methods.length > 0 ? methods : ['GET', 'POST'];
 }
 
-async function inferMetadata(
-  handlerBody: string,
-  method: HttpMethod,
-  filePath: string,
-  loader: SourceLoader,
-  routeParams: Set<string>,
-): Promise<MethodMetadata | undefined> {
+interface InferContext {
+  filePath: string;
+  loader: SourceLoader;
+  auth: AuthDetector;
+  routePath: string;
+  router: 'app' | 'pages';
+}
+
+async function inferMetadata(handlerBody: string, method: HttpMethod, ctx: InferContext): Promise<MethodMetadata | undefined> {
+  const { filePath, loader } = ctx;
+  const routeParams = pathParams(ctx.routePath);
   const meta: MethodMetadata = {};
 
   const headers = inferHeaders(handlerBody);
+  const session = await ctx.auth.sessionRequirement(handlerBody, filePath);
+  const middleware = await ctx.auth.nextMiddleware();
+  if (session) {
+    meta.auth = session;
+  } else if (middleware?.(ctx.routePath)) {
+    meta.auth = { type: 'session', cookie: await ctx.auth.middlewareCookie() };
+  } else if (headers.includes('Authorization')) {
+    meta.auth = { type: 'bearer' };
+  }
   if (headers.length > 0) meta.headers = headers;
 
   const query = inferQueryParams(handlerBody).filter((name) => !routeParams.has(name));
   if (query.length > 0) meta.query = query;
 
   if (BODY_METHODS.includes(method)) {
-    const body = await inferZodBody(handlerBody, filePath, loader);
-    if (body) {
-      meta.body = JSON.stringify(body.example, null, 2);
-      meta.bodySchema = body.schema;
-    }
+    const flowCtx = { filePath, loader };
+    const body = ctx.router === 'app'
+      ? await inferFetchBody(handlerBody, flowCtx)
+      : await inferNodeBody(handlerBody, ['req', 'request'], flowCtx);
+    applyBody(meta, body);
   }
 
   return Object.keys(meta).length > 0 ? meta : undefined;
@@ -126,6 +141,7 @@ export async function scanNextRoutes(options: NextScanOptions = {}): Promise<End
   const cwd = path.resolve(options.cwd ?? process.cwd());
   const ignore = [...DEFAULT_IGNORE, ...(options.exclude ?? [])];
   const loader = new SourceLoader(cwd);
+  const auth = new AuthDetector(cwd, loader);
   const endpoints: Endpoint[] = [];
 
   const appRouterFiles = await fg(['**/app/**/route.{ts,js,mjs}'], { cwd, ignore });
@@ -139,15 +155,21 @@ export async function scanNextRoutes(options: NextScanOptions = {}): Promise<End
     const code = (await loader.load(absolute)) ?? '';
     const isGraphQL = isGraphQLPath(routePath);
     const detected = detectAppRouterMethods(code);
-    const methods: HttpMethod[] = isGraphQL ? ['POST'] : detected.length > 0 ? detected : ['GET'];
-    const params = pathParams(routePath);
+    // GraphQL: se respetan los métodos exportados (GET/POST/OPTIONS), asegurando POST.
+    const methods: HttpMethod[] = isGraphQL
+      ? [...new Set<HttpMethod>(['POST', ...detected])]
+      : detected.length > 0 ? detected : ['GET'];
 
     const methodsMetadata: Endpoint['methodsMetadata'] = {};
-    if (!isGraphQL) {
+    if (isGraphQL) {
+      // La autenticación de GraphQL suele resolverse al construir el contexto del servidor.
+      const session = await auth.sessionRequirement(code, absolute);
+      if (session) methodsMetadata.POST = { auth: session };
+    } else {
       for (const method of methods) {
         const body = findFunctionBody(code, localNameForMethod(code, method));
         if (!body) continue;
-        const meta = await inferMetadata(body, method, absolute, loader, params);
+        const meta = await inferMetadata(body, method, { filePath: absolute, loader, auth, routePath, router: 'app' });
         if (meta) methodsMetadata[method] = meta;
       }
     }
@@ -177,13 +199,12 @@ export async function scanNextRoutes(options: NextScanOptions = {}): Promise<End
     const code = (await loader.load(absolute)) ?? '';
     const isGraphQL = isGraphQLPath(routePath);
     const methods: HttpMethod[] = isGraphQL ? ['POST'] : detectPagesRouterMethods(code);
-    const params = pathParams(routePath);
 
     // Pages Router expone un único handler: la inferencia se hace sobre todo el archivo.
     const methodsMetadata: Endpoint['methodsMetadata'] = {};
     if (!isGraphQL) {
       for (const method of methods) {
-        const meta = await inferMetadata(code, method, absolute, loader, params);
+        const meta = await inferMetadata(code, method, { filePath: absolute, loader, auth, routePath, router: 'pages' });
         if (meta) methodsMetadata[method] = meta;
       }
     }

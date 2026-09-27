@@ -1,6 +1,7 @@
 import type { GroupBy, SortMode } from './index.js';
-import type { Endpoint, GraphQLOperation, HttpMethod, ScanResult } from '../types.js';
+import type { Endpoint, GraphQLOperation, HttpMethod, MethodMetadata, ScanResult } from '../types.js';
 import { graphqlPathOf, parseOpenAPI } from '../generators/openapi.js';
+import { formFields, graphqlHeaders, graphqlTargetOf, requestHeaders, variablesUsed, type GraphqlTarget } from './request-parts.js';
 
 interface ExportOptions {
   name?: string;
@@ -41,26 +42,13 @@ export function generatePostmanCollection(openapi: any, options: ExportOptions) 
     item: buildItems(scan, { ...options, baseUrl, groupBy, sort }),
     variable: [
       { key: 'baseUrl', value: baseUrl === '{{baseUrl}}' ? defaultServer(openapi) : baseUrl },
-      ...headerVariables(scan).map((key) => ({ key, value: '' })),
+      ...variablesUsed(scan, 'postman').map((key) => ({ key, value: '' })),
     ],
   };
 }
 
 function defaultServer(openapi: any): string {
   return openapi.servers?.[0]?.variables?.baseUrl?.default ?? 'http://localhost:3000';
-}
-
-/** Variables usadas por las cabeceras generadas (`token` para Authorization y una por cabecera personalizada). */
-function headerVariables(scan: ScanResult): string[] {
-  const keys = new Set<string>();
-  for (const endpoint of scan.endpoints) {
-    for (const meta of Object.values(endpoint.methodsMetadata ?? {})) {
-      for (const header of meta?.headers ?? []) {
-        keys.add(header.toLowerCase() === 'authorization' ? 'token' : header.toLowerCase());
-      }
-    }
-  }
-  return [...keys].sort();
 }
 
 function buildItems(scan: ScanResult, options: Required<Pick<ExportOptions, 'baseUrl' | 'groupBy' | 'sort'>>): PostmanItem[] {
@@ -71,7 +59,7 @@ function buildItems(scan: ScanResult, options: Required<Pick<ExportOptions, 'bas
     .filter((endpoint) => endpoint.fileType === 'graphql')
     .flatMap((endpoint) => endpoint.methods.map((method) => ({ endpoint, method })));
   const graphqlOperations = sortGraphqlOperations(scan.graphqlOperations, options.sort);
-  const graphqlPath = graphqlPathOf(scan);
+  const graphqlPath = graphqlTargetOf(scan, graphqlPathOf(scan));
 
   if (options.groupBy === 'none') {
     return [
@@ -131,7 +119,7 @@ function methodFolders(requests: RestRequest[], options: Required<Pick<ExportOpt
 function pathFolders(
   requests: RestRequest[],
   graphqlOperations: GraphQLOperation[],
-  graphqlPath: string,
+  graphqlPath: GraphqlTarget,
   options: Required<Pick<ExportOptions, 'baseUrl' | 'sort'>>,
 ): PostmanItem[] {
   const grouped = new Map<string, RestRequest[]>();
@@ -160,30 +148,34 @@ function pathFolders(
   ];
 }
 
+function postmanBody(meta: MethodMetadata | undefined) {
+  const contentType = meta?.bodyContentType ?? (meta?.body ? 'application/json' : undefined);
+  if (contentType === 'multipart/form-data') {
+    return {
+      mode: 'formdata' as const,
+      formdata: formFields(meta?.bodySchema).map((field) => (field.file
+        ? { key: field.name, type: 'file' as const, src: [] }
+        : { key: field.name, type: 'text' as const, value: field.value })),
+    };
+  }
+  if (contentType === 'text/plain') {
+    return { mode: 'raw' as const, raw: '', options: { raw: { language: 'text' as const } } };
+  }
+  if (contentType === 'application/json') {
+    return { mode: 'raw' as const, raw: meta?.body ?? '{}', options: { raw: { language: 'json' as const } } };
+  }
+  return undefined;
+}
+
 function restToItem(request: RestRequest, baseUrl: string): PostmanItem {
   const meta = request.endpoint.methodsMetadata?.[request.method];
-  const headers = meta?.headers?.map((header) => {
-    const isAuth = header.toLowerCase() === 'authorization';
-    return {
-      key: header,
-      value: isAuth ? 'Bearer {{token}}' : `{{${header.toLowerCase()}}}`,
-      type: 'text' as const,
-    };
-  }) ?? [];
-
-  if (meta?.body) {
-    headers.push({ key: 'Content-Type', value: 'application/json', type: 'text' as const });
-  }
-
-  const body = meta?.body ? {
-    mode: 'raw' as const,
-    raw: meta.body,
-    options: {
-      raw: {
-        language: 'json' as const,
-      },
-    },
-  } : undefined;
+  const headers = requestHeaders(meta, 'postman').map((header) => ({
+    key: header.name,
+    value: header.value,
+    type: 'text' as const,
+    ...(header.disabled ? { disabled: true } : {}),
+  }));
+  const body = postmanBody(meta);
 
   return {
     name: `${request.method} ${request.endpoint.path}`,
@@ -196,18 +188,18 @@ function restToItem(request: RestRequest, baseUrl: string): PostmanItem {
   };
 }
 
-function graphqlToItem(operation: GraphQLOperation, baseUrl: string, graphqlPath: string): PostmanItem {
+function graphqlToItem(operation: GraphQLOperation, baseUrl: string, graphqlPath: GraphqlTarget): PostmanItem {
   return {
     name: operation.name,
     request: {
       method: 'POST',
-      header: [{ key: 'Content-Type', value: 'application/json' }],
+      header: graphqlHeaders(graphqlPath, 'postman').map((header) => ({ key: header.name, value: header.value, type: 'text' as const })),
       body: {
         mode: 'raw',
         raw: JSON.stringify(operation.body, null, 2),
         options: { raw: { language: 'json' } },
       },
-      url: buildPostmanUrl(baseUrl, graphqlPath),
+      url: buildPostmanUrl(baseUrl, graphqlPath.path),
     },
   };
 }
@@ -224,13 +216,13 @@ function sortGraphqlOperations(operations: GraphQLOperation[], sort: SortMode): 
 
 function buildPostmanUrl(baseUrl: string, routePath: string, query: string[] = []) {
   const base = baseUrl.replace(/\/$/, '');
-  const queryString = query.length > 0 ? `?${query.map((key) => `${key}=`).join('&')}` : '';
-  const raw = `${base}${routePath}${queryString}`;
+  // Los query params van desactivados: el usuario activa los que necesita.
+  const raw = `${base}${routePath}`;
   const pathSegments = routePath.split('/').filter(Boolean);
   const variables = pathSegments.filter((segment) => segment.startsWith(':')).map((segment) => ({ key: segment.slice(1), value: '' }));
   const extras = {
     path: pathSegments,
-    ...(query.length > 0 ? { query: query.map((key) => ({ key, value: '' })) } : {}),
+    ...(query.length > 0 ? { query: query.map((key) => ({ key, value: '', disabled: true })) } : {}),
     ...(variables.length > 0 ? { variable: variables } : {}),
   };
 

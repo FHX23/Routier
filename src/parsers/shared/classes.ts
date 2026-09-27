@@ -1,5 +1,5 @@
 import type { JsonSchema } from '../../types.js';
-import { findMatching, parseImports, parseLiteralValue, parseStringLiteral, resolveExportedLocal, skipWhitespace, splitTopLevel } from './code.js';
+import { findMatching, findTopLevelChar, parseImports, parseLiteralValue, parseStringLiteral, resolveExportedLocal, skipWhitespace, splitTopLevel } from './code.js';
 import type { SourceLoader } from './source.js';
 import { resolveSchemaByName } from './zod.js';
 
@@ -379,13 +379,47 @@ async function propertySchema(member: ClassMember, ctx: TypeContext): Promise<{ 
   return { schema, optional };
 }
 
+/** Lee una expresión de tipo desde `start` hasta el `;` o salto de línea del nivel superior. */
+export function readTypeExpression(code: string, start: number): string {
+  let depth = 0;
+  for (let i = start; i < code.length; i++) {
+    const char = code[i];
+    if (char === '"' || char === "'" || char === '`') {
+      for (i++; i < code.length && code[i] !== char; i++) if (code[i] === '\\') i++;
+      continue;
+    }
+    if ('<({['.includes(char)) depth++;
+    else if ('>)}]'.includes(char) && !(char === '>' && code[i - 1] === '=')) depth--;
+    else if (depth === 0 && char === ';') return code.slice(start, i);
+    else if (depth === 0 && char === '\n') {
+      const next = code.slice(i).trimStart()[0];
+      if (next !== '|' && next !== '&') return code.slice(start, i);
+    }
+  }
+  return code.slice(start);
+}
+
+/** Como `splitTopLevel`, pero también respeta los genéricos (`<...>`) de los tipos TypeScript. */
+function splitTypeLevel(text: string, separator: string): string[] {
+  const parts: string[] = [];
+  let rest = text;
+  for (;;) {
+    const index = findTopLevelChar(rest, separator);
+    if (index === -1) break;
+    parts.push(rest.slice(0, index));
+    rest = rest.slice(index + 1);
+  }
+  parts.push(rest);
+  return parts.map((part) => part.trim()).filter(Boolean);
+}
+
 /** Convierte un tipo TypeScript escrito en texto a JSON Schema. */
 export async function typeTextToSchema(typeText: string, ctx: TypeContext): Promise<{ schema: JsonSchema; optional: boolean }> {
   let text = typeText.trim();
   let optional = false;
   let nullable = false;
 
-  const parts = splitTopLevel(text, '|').map((part) => part.trim()).filter(Boolean);
+  const parts = splitTypeLevel(text, '|').map((part) => part.trim()).filter(Boolean);
   if (parts.length > 1) {
     const rest = parts.filter((part) => {
       if (part === 'undefined') { optional = true; return false; }
@@ -417,7 +451,48 @@ export async function typeTextToSchema(typeText: string, ctx: TypeContext): Prom
     case 'unknown':
       return finish({});
   }
-  if (/^(Record|Map)</.test(text) || text === 'object' || text.startsWith('{')) return finish({ type: 'object' });
+  // z.infer<typeof schema> / z.input / z.output
+  const zodInfer = /^(?:z|zod)\.(?:infer|input|output|TypeOf)\s*<\s*typeof\s+([\w$]+)\s*>$/.exec(text);
+  if (zodInfer) {
+    const schema = await resolveSchemaByName(zodInfer[1], ctx.filePath, ctx.loader, ctx.depth + 1);
+    return finish(schema ?? {});
+  }
+
+  // Tipos utilitarios
+  const utility = /^(Partial|Required|Readonly|Omit|Pick|NonNullable)\s*<([\s\S]+)>$/.exec(text);
+  if (utility) {
+    const [first, second] = splitTypeLevel(utility[2], ',');
+    const inner = (await typeTextToSchema(first, ctx)).schema;
+    const keys = (second ?? '').split('|').map((key) => parseStringLiteral(key.trim())).filter((key): key is string => key !== null);
+    const filterProps = (keep: (key: string) => boolean): JsonSchema => ({
+      ...inner,
+      properties: Object.fromEntries(Object.entries(inner.properties ?? {}).filter(([key]) => keep(key))),
+      required: inner.required?.filter(keep),
+    });
+    switch (utility[1]) {
+      case 'Partial': return finish(withoutRequired(inner));
+      case 'Required': return finish({ ...inner, required: Object.keys(inner.properties ?? {}) });
+      case 'Omit': return finish(filterProps((key) => !keys.includes(key)));
+      case 'Pick': return finish(filterProps((key) => keys.includes(key)));
+      default: return finish(inner);
+    }
+  }
+
+  // Tipo objeto en línea: { a: string; b?: number }
+  if (text.startsWith('{') && text.endsWith('}')) {
+    const schema: JsonSchema = { type: 'object', properties: {} };
+    const required: string[] = [];
+    for (const member of scanClassMembers(text)) {
+      if (member.kind !== 'property') continue;
+      const property = member.type ? await typeTextToSchema(member.type, ctx) : { schema: {}, optional: false };
+      schema.properties![member.name] = property.schema;
+      if (!member.optional && !property.optional) required.push(member.name);
+    }
+    if (required.length > 0) schema.required = required;
+    return finish(schema);
+  }
+
+  if (/^(Record|Map)</.test(text) || text === 'object') return finish({ type: 'object' });
   const literal = parseStringLiteral(text);
   if (literal !== null) return finish({ type: 'string', enum: [literal] });
 
@@ -447,8 +522,8 @@ export async function resolveTypeSchema(name: string, ctx: TypeContext): Promise
     return { type: typeof values[0] === 'number' ? 'number' : 'string', enum: values };
   }
 
-  const alias = new RegExp(`type\\s+${escaped}\\s*=\\s*([^;]+)`).exec(found.code);
-  if (alias) return (await typeTextToSchema(alias[1], local)).schema;
+  const alias = new RegExp(`type\\s+${escaped}\\s*(?:<[^>]*>)?\\s*=\\s*`).exec(found.code);
+  if (alias) return (await typeTextToSchema(readTypeExpression(found.code, alias.index + alias[0].length), local)).schema;
 
   const declaration = findClass(found.code, found.name) ?? findInterface(found.code, found.name);
   if (!declaration) return null;

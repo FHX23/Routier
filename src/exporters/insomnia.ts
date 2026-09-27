@@ -1,6 +1,7 @@
 import type { GroupBy, SortMode } from './index.js';
 import type { Endpoint, GraphQLOperation, HttpMethod, ScanResult } from '../types.js';
 import { graphqlPathOf, parseOpenAPI } from '../generators/openapi.js';
+import { formFields, graphqlHeaders, graphqlTargetOf, requestHeaders, variablesUsed, type GraphqlTarget } from './request-parts.js';
 
 interface ExportOptions {
   name?: string;
@@ -46,7 +47,7 @@ export function generateInsomniaExport(openapi: any, options: ExportOptions) {
       name: 'Base Environment',
       data: {
         baseUrl: environmentBaseUrl,
-        ...Object.fromEntries(headerVariables(scan).map((key) => [key, ''])),
+        ...Object.fromEntries(variablesUsed(scan, 'insomnia').map((key) => [key, ''])),
       },
     },
     ...buildResources(scan, workspaceId, groupBy, sort, generatedIds),
@@ -61,23 +62,8 @@ export function generateInsomniaExport(openapi: any, options: ExportOptions) {
   };
 }
 
-/** Nombre de la variable de entorno usada por una cabecera (válido para Nunjucks: sin guiones). */
-function headerVariable(header: string): string {
-  return header.toLowerCase() === 'authorization' ? 'token' : header.toLowerCase().replace(/[^a-z0-9_]/g, '_');
-}
-
-function headerVariables(scan: ScanResult): string[] {
-  const keys = new Set<string>();
-  for (const endpoint of scan.endpoints) {
-    for (const meta of Object.values(endpoint.methodsMetadata ?? {})) {
-      for (const header of meta?.headers ?? []) keys.add(headerVariable(header));
-    }
-  }
-  return [...keys].sort();
-}
-
 function buildResources(scan: ScanResult, workspaceId: string, groupBy: GroupBy, sort: SortMode, generatedIds: Set<string>) {
-  const graphqlPath = graphqlPathOf(scan);
+  const graphqlPath = graphqlTargetOf(scan, graphqlPathOf(scan));
   const restRequests = scan.endpoints
     .filter((endpoint) => endpoint.fileType !== 'graphql')
     .flatMap((endpoint) => endpoint.methods.map((method) => ({ endpoint, method })));
@@ -164,7 +150,7 @@ function pathResources(
   workspaceId: string,
   sort: SortMode,
   generatedIds: Set<string>,
-  graphqlPath: string,
+  graphqlPath: GraphqlTarget,
 ) {
   const resources: unknown[] = [];
   const grouped = new Map<string, RestRequest[]>();
@@ -201,19 +187,26 @@ function folder(id: string, parentId: string, name: string) {
 
 function restToResource(request: RestRequest, parentId: string, generatedIds: Set<string>) {
   const meta = request.endpoint.methodsMetadata?.[request.method];
-  const headers = meta?.headers?.map((header) => {
-    const isAuth = header.toLowerCase() === 'authorization';
-    return {
-      name: header,
-      value: isAuth ? 'Bearer {{ _.token }}' : `{{ _.${headerVariable(header)} }}`,
-    };
-  }) ?? [];
+  const headers = requestHeaders(meta, 'insomnia').map((header) => ({
+    name: header.name,
+    value: header.value,
+    ...(header.disabled ? { disabled: true } : {}),
+  }));
 
-  const body = meta?.body ? {
-    mimeType: 'application/json',
-    text: meta.body,
-  } : {};
-  if (meta?.body) headers.push({ name: 'Content-Type', value: 'application/json' });
+  const contentType = meta?.bodyContentType ?? (meta?.body ? 'application/json' : undefined);
+  let body: Record<string, unknown> = {};
+  if (contentType === 'multipart/form-data') {
+    body = {
+      mimeType: 'multipart/form-data',
+      params: formFields(meta?.bodySchema).map((field) => (field.file
+        ? { name: field.name, value: '', type: 'file', fileName: '' }
+        : { name: field.name, value: field.value })),
+    };
+  } else if (contentType === 'text/plain') {
+    body = { mimeType: 'text/plain', text: '' };
+  } else if (contentType === 'application/json') {
+    body = { mimeType: 'application/json', text: meta?.body ?? '{}' };
+  }
 
   const pathParameters = request.endpoint.path
     .split('/')
@@ -229,20 +222,20 @@ function restToResource(request: RestRequest, parentId: string, generatedIds: Se
     url: `{{ _.baseUrl }}${request.endpoint.path}`,
     headers,
     body,
-    parameters: (meta?.query ?? []).map((name) => ({ name, value: '' })),
+    parameters: (meta?.query ?? []).map((name) => ({ name, value: '', disabled: true })),
     ...(pathParameters.length > 0 ? { pathParameters } : {}),
   };
 }
 
-function graphqlToResource(operation: GraphQLOperation, parentId: string, generatedIds: Set<string>, graphqlPath: string) {
+function graphqlToResource(operation: GraphQLOperation, parentId: string, generatedIds: Set<string>, graphqlPath: GraphqlTarget) {
   return {
     _id: resourceId(`req_${parentId}_graphql_${operation.type}_${operation.name}`, generatedIds),
     _type: 'request',
     parentId,
     name: operation.name,
     method: 'POST',
-    url: `{{ _.baseUrl }}${graphqlPath}`,
-    headers: [{ name: 'Content-Type', value: 'application/json' }],
+    url: `{{ _.baseUrl }}${graphqlPath.path}`,
+    headers: graphqlHeaders(graphqlPath, 'insomnia').map((header) => ({ name: header.name, value: header.value })),
     body: {
       mimeType: 'application/json',
       text: JSON.stringify(operation.body, null, 2),
