@@ -330,7 +330,8 @@ export function parseOpenAPI(openapi: any): ScanResult {
         fileType: 'graphql',
         sourceFile,
         router,
-        ...(auth ? { methodsMetadata: { POST: { auth } } } : {}),
+        // La request "cruda" al endpoint lleva una consulta mínima válida para poder enviarse tal cual.
+        methodsMetadata: { POST: { ...(auth ? { auth } : {}), body: JSON.stringify({ query: 'query { __typename }' }, null, 2) } },
       });
       continue;
     }
