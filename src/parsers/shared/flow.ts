@@ -258,7 +258,15 @@ async function collect(code: string, roots: Root[], tree: FieldNode, ctx: FlowCo
         fields.push(part);
       }
       if (fields.length > 0) {
-        nodeAt(here, fields);
+        const child = nodeAt(here, fields);
+        // `body.role as UserRole`: el tipo del cast describe el campo (p. ej. una unión de literales).
+        if (!match[2]) {
+          const cast = readAsType(code, match.index! + match[0].length)?.trim();
+          if (cast && !['any', 'unknown', 'string', 'number', 'boolean', 'const'].includes(cast)) {
+            const schema = await schemaFromType(cast, ctx);
+            if (schema) setSchema(child, schema, 'type');
+          }
+        }
         // `req.body.article` también se rastrea (alias, llamadas a servicios, spreads).
         if (fields.length <= 2 && root.path.length < 3) {
           queue.push({ expr: `${root.expr}.${fields.join('.')}`, path: [...root.path, ...fields] });

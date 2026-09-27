@@ -81,3 +81,13 @@ test('GraphQL variables for custom scalars use realistic values', async () => {
   const now = result.graphqlOperations.find((operation) => operation.name === 'now');
   assert.deepEqual(now?.variables, { after: '2024-01-01T00:00:00.000Z' });
 });
+
+test('resolves Prisma 7 const enums through re-exports and field casts to literal unions', async () => {
+  const { byPath } = await scan();
+  const seller = byPath.get('/api/sellers/:id')?.methodsMetadata?.PATCH;
+  assert.deepEqual(seller?.bodySchema?.properties?.status.enum, ['PENDING_APPROVAL', 'ACTIVE']);
+  assert.equal(JSON.parse(seller!.body!).status, 'PENDING_APPROVAL');
+
+  const login = byPath.get('/api/dev-login')?.methodsMetadata?.POST;
+  assert.deepEqual(JSON.parse(login!.body!), { role: 'ADMIN' });
+});

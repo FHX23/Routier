@@ -26,6 +26,12 @@ const EXAMPLE_BY_FORMAT: Record<string, string> = {
   binary: '',
 };
 
+/** Campos que cierran un rango de fechas (`endDate`, `fechaFin`, `validUntil`...). */
+const END_OF_RANGE = /(end|fin|until|hasta|expir|to)(date|at|servicio)?$|^(end|fin|fecha_?fin|date_?to)/i;
+
+/** Referencias a otras entidades: con un valor inventado romperían claves foráneas. */
+const REFERENCE_FIELD = /^id$|Id$|_id$|Ids$|_ids$/;
+
 /** Pistas por nombre de campo cuando el schema no dice nada más que "string". */
 const NAME_HINTS: [RegExp, string][] = [
   [/e-?mail|correo/i, 'user@example.com'],
@@ -239,6 +245,10 @@ function stringExample(schema: JsonSchema, name?: string): string {
     const fromPattern = exampleFromPattern(schema.pattern, schema.minLength, schema.maxLength);
     if (fromPattern !== null) return fromPattern;
   }
+  if ((schema.format === 'date-time' || schema.format === 'date') && name && END_OF_RANGE.test(name)) {
+    // Fin de un rango: posterior a la fecha de inicio de ejemplo.
+    return schema.format === 'date' ? '2024-01-02' : '2024-01-02T00:00:00.000Z';
+  }
   if (schema.format && EXAMPLE_BY_FORMAT[schema.format] !== undefined) return EXAMPLE_BY_FORMAT[schema.format];
   if (name) {
     const hint = NAME_HINTS.find(([regex]) => regex.test(name));
@@ -284,8 +294,15 @@ export function exampleFromSchema(schema: JsonSchema, name?: string, depth = 0):
     }
     case 'object': {
       if (schema.properties) {
+        // Con una lista de obligatorios conocida, se omiten los opcionales que harían fallar la request:
+        // referencias a otras entidades (IDs inventados) y z.date() (un Date no viaja en JSON).
+        const omit = (key: string, value: JsonSchema) =>
+          (Array.isArray(schema.required) || schema['x-validated'] === true) && !schema.required?.includes(key)
+          && (REFERENCE_FIELD.test(key) || value['x-date-object'] === true);
         return Object.fromEntries(
-          Object.entries(schema.properties).map(([key, value]) => [key, exampleFromSchema(value, key, depth + 1)]),
+          Object.entries(schema.properties)
+            .filter(([key, value]) => !omit(key, value))
+            .map(([key, value]) => [key, exampleFromSchema(value, key, depth + 1)]),
         );
       }
       if (schema.additionalProperties && typeof schema.additionalProperties === 'object') {

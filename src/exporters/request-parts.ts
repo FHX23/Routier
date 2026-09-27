@@ -1,4 +1,5 @@
 import type { AuthRequirement, JsonSchema, MethodMetadata, ScanResult } from '../types.js';
+import { exampleFromSchema } from '../parsers/shared/examples.js';
 
 /**
  * Partes comunes de una request para los exportadores (Postman e Insomnia):
@@ -96,7 +97,8 @@ export function formFields(schema: JsonSchema | undefined): FormField[] {
   return Object.entries(schema?.properties ?? {}).map(([name, property]) => {
     const item = property.type === 'array' ? property.items ?? {} : property;
     const file = item.format === 'binary';
-    const value = file ? '' : item.enum?.[0] !== undefined ? String(item.enum[0]) : '';
+    const example = file ? '' : exampleFromSchema(item, name);
+    const value = example === null || example === undefined ? '' : typeof example === 'object' ? JSON.stringify(example) : String(example);
     return { name, file, value };
   });
 }

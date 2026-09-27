@@ -42,3 +42,23 @@ test('the example body inferred from a Zod schema passes that same schema', asyn
   assert.equal(post!.bodySchema?.properties?.rut.pattern !== undefined, true);
   assert.equal(post!.bodySchema?.properties?.netPrice.minimum, 100);
 });
+
+test('examples omit optional references and Date objects, and order date ranges', () => {
+  const example = exampleFromSchema({
+    type: 'object',
+    required: ['plate', 'startDate'],
+    properties: {
+      plate: { type: 'string' },
+      clientId: { type: 'string' },
+      hiredAt: { type: 'string', format: 'date-time', 'x-date-object': true },
+      startDate: { type: 'string', format: 'date-time' },
+      endDate: { type: 'string', format: 'date-time' },
+    },
+  }) as Record<string, string>;
+
+  assert.deepEqual(Object.keys(example).sort(), ['endDate', 'plate', 'startDate']);
+  assert.ok(new Date(example.endDate) > new Date(example.startDate));
+
+  // Sin lista de obligatorios (body inferido por uso) no se omite nada.
+  assert.deepEqual(exampleFromSchema({ type: 'object', properties: { userId: {}, role: {} } }), { userId: 'string', role: 'string' });
+});

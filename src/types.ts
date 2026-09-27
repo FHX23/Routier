@@ -23,6 +23,10 @@ export interface JsonSchema {
   minimum?: number;
   maximum?: number;
   minItems?: number;
+  /** Extensión: `z.date()` exige un objeto Date, que no puede viajar en JSON. */
+  'x-date-object'?: boolean;
+  /** Extensión: el objeto viene de una validación o tipo explícito (no de campos leídos en el código). */
+  'x-validated'?: boolean;
 }
 
 /** Autenticación que exige una operación. */

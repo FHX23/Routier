@@ -115,7 +115,7 @@ async function interpretBase(segment: Segment, ctx: Context): Promise<Interprete
     case 'boolean':
       return plain({ type: 'boolean' });
     case 'date':
-      return plain({ type: 'string', format: 'date-time' });
+      return plain({ type: 'string', format: 'date-time', 'x-date-object': true });
     case 'literal': {
       const value = parseLiteralValue(args);
       return plain(value === undefined ? {} : literalSchema(value));
@@ -310,7 +310,7 @@ function mergeObjects(base: JsonSchema, extra: JsonSchema): JsonSchema {
 
 async function interpretShape(block: string, ctx: Context): Promise<JsonSchema> {
   const inner = block.trim().replace(/^\{/, '').replace(/\}$/, '');
-  let result: JsonSchema = { type: 'object', properties: {} };
+  let result: JsonSchema = { type: 'object', properties: {}, 'x-validated': true };
   const required: string[] = [];
 
   for (const prop of splitTopLevel(inner)) {

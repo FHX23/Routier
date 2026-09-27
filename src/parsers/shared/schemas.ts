@@ -106,7 +106,7 @@ interface Interpreted {
 }
 
 async function joiObject(props: string, filePath: string, loader: SourceLoader, depth: number): Promise<JsonSchema> {
-  const schema: JsonSchema = { type: 'object', properties: {} };
+  const schema: JsonSchema = { type: 'object', properties: {}, 'x-validated': true };
   const required: string[] = [];
   for (const [key, value] of objectLiteralProps(props)) {
     const inner = await interpretJoi(value, filePath, loader, depth + 1);
@@ -237,7 +237,7 @@ export async function interpretTypeBox(text: string, filePath: string, loader: S
       return { schema: literals ? { type: 'string', enum: literals } : { anyOf: schemas }, required: true };
     }
     case 'Object': {
-      const schema: JsonSchema = { type: 'object', properties: {} };
+      const schema: JsonSchema = { type: 'object', properties: {}, 'x-validated': true };
       const required: string[] = [];
       for (const [key, value] of objectLiteralProps(args[0] ?? '{}')) {
         const inner = await interpretTypeBox(value, file, loader, depth + 1);

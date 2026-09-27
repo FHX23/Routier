@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import fg from 'fast-glob';
 import path from 'node:path';
 import type { AuthRequirement } from '../../types.js';
 import { findFunction, parseImports, parseStringLiteral, resolveExportedLocal } from './code.js';
@@ -75,10 +76,51 @@ export class AuthDetector {
       return /(^|[^\d])4\./.test(version) ? 'next-auth.session-token' : 'authjs.session-token';
     }
     if (library === 'node-session') {
+      const configured = await this.configuredSessionCookie();
+      if (configured) return configured;
       if (deps['@fastify/session'] || deps['@fastify/secure-session']) return 'sessionId';
       return 'connect.sid';
     }
     return COOKIE_BY_LIBRARY[library];
+  }
+
+  private configuredCookie?: Promise<string | null>;
+
+  /**
+   * Nombre de cookie configurado al registrar la sesión: `cookieName: 'sid'` (@fastify/session)
+   * o `name: 'sid'` (express-session). Si viene de una variable de entorno, se busca su valor
+   * de ejemplo en `.env.example` (nunca en `.env`).
+   */
+  private configuredSessionCookie(): Promise<string | null> {
+    this.configuredCookie ??= (async () => {
+      const files = await fg(['**/*.{ts,js,mjs,cjs}'], { cwd: this.cwd, ignore: ['**/node_modules/**', '**/dist/**', '**/.next/**'] });
+      for (const file of files) {
+        const code = await this.loader.load(path.join(this.cwd, file));
+        if (!code || !/(fastifySession|@fastify\/session|express-session|session\s*\()/.test(code)) continue;
+        const option = /(?:cookieName|\bname)\s*:\s*([^,}\n]+)/.exec(code.slice(code.search(/fastifySession|session\s*\(/)));
+        if (!option) continue;
+        const value = option[1].trim();
+        const literal = parseStringLiteral(value);
+        if (literal) return literal;
+        const envName = /([A-Z][A-Z0-9_]+)\s*$/.exec(value)?.[1];
+        if (envName) return this.exampleEnvValue(envName);
+      }
+      return null;
+    })();
+    return this.configuredCookie;
+  }
+
+  private async exampleEnvValue(name: string): Promise<string | null> {
+    for (const file of ['.env.example', '.env.sample', '.env.template', '.env.dist']) {
+      try {
+        const content = await readFile(path.join(this.cwd, file), 'utf-8');
+        const match = new RegExp(`^${name}\\s*=\\s*["']?([^"'\\s#]+)`, 'm').exec(content);
+        if (match) return match[1];
+      } catch {
+        // archivo inexistente
+      }
+    }
+    return null;
   }
 
   /** Librería de sesión usada directamente en `code` (sin seguir llamadas). */

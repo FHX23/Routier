@@ -279,7 +279,28 @@ async function locate(name: string, ctx: TypeContext): Promise<{ code: string; f
   const targetCode = target ? await ctx.loader.load(target) : null;
   if (!target || !targetCode) return null;
   const local = binding.imported === 'default' ? resolveExportedLocal(targetCode, 'default') ?? name : binding.imported;
-  return { code: targetCode, filePath: target, name: local };
+  return (await followReExports(local, target, ctx.loader, 0)) ?? { code: targetCode, filePath: target, name: local };
+}
+
+/** Sigue `export * from './x'` y `export { A as B } from './x'` hasta la declaración del tipo. */
+async function followReExports(name: string, filePath: string, loader: SourceLoader, depth: number): Promise<{ code: string; filePath: string; name: string } | null> {
+  const code = await loader.load(filePath);
+  if (code === null || depth > 4) return null;
+  const escaped = name.replace(/\$/g, '\\$');
+  if (new RegExp(`(?:class|enum|type|interface)\\s+${escaped}\\b`).test(code)) return { code, filePath, name };
+  for (const match of code.matchAll(/export\s+(?:type\s+)?(\*|\{[^}]*\})\s+from\s+(['"])([^'"]+)\2/g)) {
+    let target = name;
+    if (match[1] !== '*') {
+      const entry = match[1].slice(1, -1).split(',').map((part) => part.trim().replace(/^type\s+/, '').split(/\s+as\s+/))
+        .find(([imported, exported]) => (exported ?? imported) === name);
+      if (!entry) continue;
+      target = entry[0];
+    }
+    const next = loader.resolve(filePath, match[3]);
+    const found = next ? await followReExports(target, next, loader, depth + 1) : null;
+    if (found) return found;
+  }
+  return null;
 }
 
 function withoutRequired(schema: JsonSchema): JsonSchema {
@@ -297,6 +318,7 @@ function mergeObjects(a: JsonSchema, b: JsonSchema): JsonSchema {
     type: 'object',
     properties: { ...a.properties, ...b.properties },
     required: required.length > 0 ? [...new Set(required)] : undefined,
+    ...(a['x-validated'] || b['x-validated'] ? { 'x-validated': true } : {}),
   };
 }
 
@@ -451,6 +473,18 @@ export async function typeTextToSchema(typeText: string, ctx: TypeContext): Prom
     case 'unknown':
       return finish({});
   }
+  // Enum de objeto constante (Prisma 7, patrones "as const"): (typeof X)[keyof typeof X]
+  const constEnum = /^\(\s*typeof\s+([\w$]+)\s*\)\s*\[\s*keyof\s+typeof\s+\1\s*\]$/.exec(text);
+  if (constEnum) {
+    const code = (await ctx.loader.load(ctx.filePath)) ?? '';
+    const declaration = new RegExp(`(?:const|let|var)\\s+${constEnum[1].replace(/\$/g, '\\$')}\\s*=\\s*\\{`).exec(code);
+    if (declaration) {
+      const open = declaration.index + declaration[0].length - 1;
+      const values = parseLiteralValue(code.slice(open, findMatching(code, open) + 1));
+      if (values && typeof values === 'object') return finish({ type: 'string', enum: Object.values(values) });
+    }
+  }
+
   // z.infer<typeof schema> / z.input / z.output
   const zodInfer = /^(?:z|zod)\.(?:infer|input|output|TypeOf)\s*<\s*typeof\s+([\w$]+)\s*>$/.exec(text);
   if (zodInfer) {
@@ -480,7 +514,7 @@ export async function typeTextToSchema(typeText: string, ctx: TypeContext): Prom
 
   // Tipo objeto en línea: { a: string; b?: number }
   if (text.startsWith('{') && text.endsWith('}')) {
-    const schema: JsonSchema = { type: 'object', properties: {} };
+    const schema: JsonSchema = { type: 'object', properties: {}, 'x-validated': true };
     const required: string[] = [];
     for (const member of scanClassMembers(text)) {
       if (member.kind !== 'property') continue;
@@ -528,7 +562,7 @@ export async function resolveTypeSchema(name: string, ctx: TypeContext): Promise
   const declaration = findClass(found.code, found.name) ?? findInterface(found.code, found.name);
   if (!declaration) return null;
 
-  let schema: JsonSchema = { type: 'object', properties: {} };
+  let schema: JsonSchema = { type: 'object', properties: {}, 'x-validated': true };
   const base = await heritageSchema(declaration.heritage, local);
   if (base) schema = mergeObjects(schema, base);
 

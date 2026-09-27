@@ -75,6 +75,11 @@ function authOf(meta: MethodMetadata | undefined): AuthRequirement | undefined {
   return meta?.headers?.some((header) => header.toLowerCase() === 'authorization') ? { type: 'bearer' } : undefined;
 }
 
+/** Quita las marcas internas de Routier (`x-validated`, `x-date-object`) de un schema. */
+function publicSchema(schema: JsonSchema): JsonSchema {
+  return JSON.parse(JSON.stringify(schema, (key, value) => (key === 'x-validated' || key === 'x-date-object' ? undefined : value)));
+}
+
 function buildRequestBody(meta: MethodMetadata) {
   const contentType = meta.bodyContentType ?? 'application/json';
   if (contentType === 'text/plain') {
@@ -92,7 +97,7 @@ function buildRequestBody(meta: MethodMetadata) {
     required: true,
     content: {
       [contentType]: {
-        schema: meta.bodySchema ?? { type: 'object' },
+        schema: publicSchema(meta.bodySchema ?? { type: 'object' }),
         ...(example !== undefined && contentType === 'application/json' ? { example } : {}),
       },
     },
