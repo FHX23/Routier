@@ -1,0 +1,1 @@
+{ "name": "express-patterns", "version": "1.0.0", "dependencies": { "express": "^4.19.0", "joi": "^17.0.0", "multer": "^1.4.5", "passport": "^0.7.0" } }

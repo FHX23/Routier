@@ -118,7 +118,8 @@ test('exporters define variables for auth and custom headers and include query/p
 
   const postman = generatePostmanCollection(doc, { baseUrl: '{{baseUrl}}', groupBy: 'none' });
   const item = postman.item[0] as any;
-  assert.equal(item.request.url.raw, '{{baseUrl}}/api/posts/:id?include=');
+  assert.equal(item.request.url.raw, '{{baseUrl}}/api/posts/:id');
+  assert.deepEqual(item.request.url.query, [{ key: 'include', value: '', disabled: true }]);
   assert.deepEqual(item.request.url.variable, [{ key: 'id', value: '' }]);
   assert.deepEqual(postman.variable.map((v) => v.key), ['baseUrl', 'token', 'x-api-key']);
 
@@ -129,7 +130,7 @@ test('exporters define variables for auth and custom headers and include query/p
     { name: 'Authorization', value: 'Bearer {{ _.token }}' },
     { name: 'X-Api-Key', value: '{{ _.x_api_key }}' },
   ]);
-  assert.deepEqual(request.parameters, [{ name: 'include', value: '' }]);
+  assert.deepEqual(request.parameters, [{ name: 'include', value: '', disabled: true }]);
   assert.deepEqual(request.pathParameters, [{ name: 'id', value: '' }]);
   assert.deepEqual(Object.keys(env.data).sort(), ['baseUrl', 'token', 'x_api_key']);
 });

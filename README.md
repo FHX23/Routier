@@ -7,7 +7,7 @@
 
 **Routier** scans the source code of your API and generates ready-to-import **OpenAPI 3**, **Postman** and **Insomnia** collections — no decorators, annotations or running server required.
 
-It supports **Next.js** (App Router and Pages Router), **Express**, **Fastify**, **NestJS** and **GraphQL** schemas, and infers auth headers, query parameters and example request bodies from your Zod schemas, JSON Schemas and DTOs.
+It supports **Next.js** (App Router and Pages Router), **Express**, **Fastify**, **NestJS** and **GraphQL** schemas, and infers authentication (Bearer tokens and cookie sessions), query parameters and request bodies from your Zod, Joi, TypeBox and JSON Schema validators, DTOs, TypeScript types or simply from the fields your handlers read.
 
 [Leer en español](./README.es.md)
 
@@ -68,7 +68,7 @@ The files are written to `./routier-exports` inside the scanned project:
 | `routier-postman.json` | Postman → **Import** → select the file |
 | `routier-insomnia.json` | Insomnia → **Import** → select the file |
 
-The collections include a `baseUrl` variable plus a `token` variable used by every request that needs `Authorization: Bearer …`, so you only fill them in once.
+The collections include a `baseUrl` variable, a `token` variable for requests that need `Authorization: Bearer …` and a `session` variable for cookie-based sessions (sent as a `Cookie` header with the right cookie name), so you only fill them in once. Required query parameters are enabled with a valid example value; optional ones are included but disabled, ready to be switched on.
 
 ## What Routier detects
 
@@ -76,13 +76,15 @@ The framework is detected from your `package.json`. Use `--framework` to force o
 
 | | Routes | Auth & headers | Query params | Request body |
 | --- | --- | --- | --- | --- |
-| **Next.js** | `app/**/route.ts` handlers, `pages/api/**` (methods inferred from `req.method` checks), route groups, dynamic and catch-all segments, `export { handler as GET }`, `export const { GET, POST } = handlers` | `req.headers.get()`, `headers()` from `next/headers`, `req.headers[...]` | `searchParams.get()`, `req.query` | Zod `schema.parse(await req.json())` |
-| **Express** | `app.get()`, `router.post()`, `router.route('/x').get().post()`, nested `app.use('/prefix', router)` across ESM and CommonJS files | auth middlewares (`requireAuth`, `passport.authenticate`, `verifyJwt`…), `req.get()`, `req.header()` | `req.query` | validator middlewares (`validate(schema)`) and `schema.parse(req.body)` |
-| **Fastify** | `fastify.get()`, `fastify.route({ method, url })`, `register(plugin, { prefix })`, inline plugins, `@fastify/autoload` | `onRequest` / `preHandler` hooks and `addHook` with auth functions | `schema.querystring`, `request.query` | `schema.body` (JSON Schema or Zod) |
-| **NestJS** | `@Controller` + `@Get/@Post/…`, `setGlobalPrefix`, URI versioning and `@Version` | `@UseGuards(AuthGuard)`, `@ApiBearerAuth`, `@Public()` opt-out, `@Headers('x')` | `@Query('x')`, `@Query() dto` | `@Body() dto` with class-validator DTOs, `PartialType`/`PickType`/`OmitType`, `ZodValidationPipe` |
+| **Next.js** | `app/**/route.ts` handlers, `pages/api/**` (methods inferred from `req.method` checks), route groups, dynamic and catch-all segments, `export { handler as GET }`, `export const { GET, POST } = handlers` | sessions from next-auth (`auth()`, `getServerSession`), better-auth, Clerk, Supabase and Lucia, also through helper functions and `middleware.ts`/`proxy.ts`; `req.headers.get()`, `headers()` | `searchParams.get()`, `req.query` | `await req.json()` validated with Zod, typed (`as T`, `: T`), destructured or passed to server actions; `formData()` (multipart) and `text()` |
+| **Express** | `app.get()`, `router.post()`, `router.route('/x').get().post()`, nested `app.use('/prefix', router)` across ESM and CommonJS files, chained anonymous routers (`Router().use(...)`) and routes mounted from arrays | auth middlewares (`requireAuth`, `passport.authenticate`, `auth.optional`…), `req.session`, `req.get()`, `req.header()` | `req.query`, also when passed to services | validator middlewares with Zod or Joi (`validate({ body, query })`), `req.body` usage, multer uploads |
+| **Fastify** | `fastify.get()`, `fastify.route({ method, url })`, `register(plugin, { prefix })`, inline plugins, `@fastify/autoload` (including `autohooks`) | `onRequest` / `preHandler` hooks, `addHook` with auth functions or session checks | `schema.querystring`, `request.query` | `schema.body` with JSON Schema, TypeBox or Zod; multipart uploads |
+| **NestJS** | `@Controller` + `@Get/@Post/…`, `setGlobalPrefix` (also from configuration defaults and with `exclude`), URI versioning and `@Version` | `@UseGuards(AuthGuard)`, `@ApiBearerAuth`, `@Public()` opt-out, `consumer.apply(AuthMiddleware).forRoutes(...)`, `@Headers('x')` | `@Query('x')`, `@Query() dto`, `@Query() query` followed into services | `@Body() dto` with class-validator DTOs, `PartialType`/`PickType`/`OmitType`, `ZodValidationPipe`, `FileInterceptor` uploads |
 | **GraphQL** | `.graphql` / `.gql` files and static `gql` / `typeDefs` templates, `extend type`, custom root types | — | — | variables generated for scalars, enums and input objects |
 
-Zod support covers Zod 3 and 4: `z.object`, nested objects, arrays, enums, literals, unions, records, `z.email()`/`z.uuid()`/`z.url()`, `.optional()`, `.nullable()`, `.default()`, `.extend()`, `.pick()`, `.omit()`, `.partial()`, and schemas imported from other files (relative paths and the `@/` alias).
+Zod support covers Zod 3 and 4 (including named imports such as `import { object, string } from 'zod'`): nested objects, arrays, enums, literals, unions, records, `z.email()`/`z.uuid()`/`z.url()`, `.optional()`, `.nullable()`, `.default()`, `.extend()`, `.pick()`, `.omit()`, `.partial()`, and schemas imported from other files (relative paths and the `@/` alias). Joi (`Joi.object().keys(...)`) and TypeBox (`Type.Object(...)`) are interpreted too, as are TypeScript types such as `Partial<Omit<T, 'id'>>`, `z.infer<typeof schema>` and Prisma enums.
+
+Example bodies respect the validations Routier finds (`min`/`max`, regular expressions, formats, enums and defaults, also from class-validator decorators such as `@Min` or `@Matches`), so the generated requests pass the server's validation without editing: for example, a Chilean RUT pattern produces `1.111.111-1` and `price: z.number().min(100)` produces `100`. Allow-lists checked in the handler (`if (!PLANS.includes(plan))`) are documented as enums too.
 
 Example of what Routier produces from a Next.js handler:
 
@@ -188,10 +190,10 @@ Also exported: `scanNextRoutes`, `scanGraphQLSchema`, `parseOpenAPI`, `generateI
 
 Routier reads your code statically and never executes it, so it only sees what is written literally:
 
-- Routes whose paths are built at runtime (`app.get(prefix + '/x')`, loops over arrays of routes) are skipped.
-- Schemas must be declared with Zod, JSON Schema object literals or class-validator DTOs; TypeBox, Joi and Yup are not interpreted yet.
+- Routes whose paths are built at runtime (`app.get(prefix + '/x')`, route tables loaded from other modules or generated dynamically) are skipped. Literal arrays walked with `forEach` are supported.
+- Validation libraries other than Zod, Joi, TypeBox, class-validator and JSON Schema (for example Yup or Valibot) are not interpreted; Routier then falls back to the fields your handler reads.
 - GraphQL operations are read from SDL. Code-first schemas (NestJS `@Resolver`, Pothos, TypeGraphQL…) are only picked up if the generated `.graphql` file is committed.
-- Example values are generic (`"string"`, `10`, `user@example.com`), not real data.
+- Example values satisfy the declared validations but are not real data: IDs of existing records, unique values and custom `refine()` rules still need to be filled in by hand.
 
 If Routier misses a pattern you use, please [open an issue](https://github.com/FHX23/Routier/issues/new/choose) with a small snippet.
 
@@ -203,7 +205,8 @@ If Routier misses a pattern you use, please [open an issue](https://github.com/F
 - [x] `routier.json` configuration
 - [x] Auth, headers, query params and Zod body inference
 - [x] Express, Fastify and NestJS
-- [ ] TypeBox, Joi and Yup schemas
+- [x] Joi and TypeBox schemas, cookie sessions and bodies without validation libraries
+- [ ] Yup and Valibot schemas
 - [ ] Response schemas
 - [ ] GitHub Action that keeps collections up to date and reports API changes in pull requests
 

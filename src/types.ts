@@ -17,17 +17,41 @@ export interface JsonSchema {
   nullable?: boolean;
   default?: unknown;
   anyOf?: JsonSchema[];
+  minLength?: number;
+  maxLength?: number;
+  pattern?: string;
+  minimum?: number;
+  maximum?: number;
+  minItems?: number;
+  /** Extensión: `z.date()` exige un objeto Date, que no puede viajar en JSON. */
+  'x-date-object'?: boolean;
+  /** Extensión: el objeto viene de una validación o tipo explícito (no de campos leídos en el código). */
+  'x-validated'?: boolean;
 }
 
+/** Autenticación que exige una operación. */
+export type AuthRequirement =
+  | { type: 'bearer'; optional?: boolean }
+  | { type: 'session'; cookie: string };
+
+/** Tipo de contenido del body de una request. */
+export type BodyContentType = 'application/json' | 'multipart/form-data' | 'text/plain';
+
 export interface MethodMetadata {
+  /** Autenticación requerida (Bearer o sesión por cookie). */
+  auth?: AuthRequirement;
   /** Cabeceras leídas por el handler (`Authorization` indica autenticación Bearer). */
   headers?: string[];
   /** Parámetros de query string leídos por el handler. */
   query?: string[];
+  /** Schema de la query según el validador: tipos de cada parámetro y cuáles son obligatorios. */
+  querySchema?: JsonSchema;
   /** Body JSON de ejemplo (serializado). */
   body?: string;
   /** Schema del body inferido (por ejemplo desde Zod). */
   bodySchema?: JsonSchema;
+  /** Tipo de contenido del body (por defecto JSON). */
+  bodyContentType?: BodyContentType;
 }
 
 export interface Endpoint {

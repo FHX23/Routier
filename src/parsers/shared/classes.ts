@@ -1,5 +1,5 @@
 import type { JsonSchema } from '../../types.js';
-import { findMatching, parseImports, parseLiteralValue, parseStringLiteral, resolveExportedLocal, skipWhitespace, splitTopLevel } from './code.js';
+import { findMatching, findTopLevelChar, parseImports, parseLiteralValue, parseStringLiteral, resolveExportedLocal, skipWhitespace, splitTopLevel } from './code.js';
 import type { SourceLoader } from './source.js';
 import { resolveSchemaByName } from './zod.js';
 
@@ -279,7 +279,28 @@ async function locate(name: string, ctx: TypeContext): Promise<{ code: string; f
   const targetCode = target ? await ctx.loader.load(target) : null;
   if (!target || !targetCode) return null;
   const local = binding.imported === 'default' ? resolveExportedLocal(targetCode, 'default') ?? name : binding.imported;
-  return { code: targetCode, filePath: target, name: local };
+  return (await followReExports(local, target, ctx.loader, 0)) ?? { code: targetCode, filePath: target, name: local };
+}
+
+/** Sigue `export * from './x'` y `export { A as B } from './x'` hasta la declaración del tipo. */
+async function followReExports(name: string, filePath: string, loader: SourceLoader, depth: number): Promise<{ code: string; filePath: string; name: string } | null> {
+  const code = await loader.load(filePath);
+  if (code === null || depth > 4) return null;
+  const escaped = name.replace(/\$/g, '\\$');
+  if (new RegExp(`(?:class|enum|type|interface)\\s+${escaped}\\b`).test(code)) return { code, filePath, name };
+  for (const match of code.matchAll(/export\s+(?:type\s+)?(\*|\{[^}]*\})\s+from\s+(['"])([^'"]+)\2/g)) {
+    let target = name;
+    if (match[1] !== '*') {
+      const entry = match[1].slice(1, -1).split(',').map((part) => part.trim().replace(/^type\s+/, '').split(/\s+as\s+/))
+        .find(([imported, exported]) => (exported ?? imported) === name);
+      if (!entry) continue;
+      target = entry[0];
+    }
+    const next = loader.resolve(filePath, match[3]);
+    const found = next ? await followReExports(target, next, loader, depth + 1) : null;
+    if (found) return found;
+  }
+  return null;
 }
 
 function withoutRequired(schema: JsonSchema): JsonSchema {
@@ -297,6 +318,7 @@ function mergeObjects(a: JsonSchema, b: JsonSchema): JsonSchema {
     type: 'object',
     properties: { ...a.properties, ...b.properties },
     required: required.length > 0 ? [...new Set(required)] : undefined,
+    ...(a['x-validated'] || b['x-validated'] ? { 'x-validated': true } : {}),
   };
 }
 
@@ -313,7 +335,7 @@ async function heritageSchema(heritage: string, ctx: TypeContext): Promise<JsonS
   const next = { ...ctx, depth: ctx.depth + 1 };
 
   if (helper === 'createZodDto') {
-    return resolveSchemaByName(args[0]?.trim() ?? '', ctx.filePath, ctx.loader, ctx.depth + 1);
+    return resolveSchemaByName(args[0]?.trim() ?? '', ctx.filePath, ctx.loader);
   }
   const base = args[0] ? await resolveTypeSchema(args[0].trim(), next) : null;
   if (!base) return null;
@@ -376,7 +398,61 @@ async function propertySchema(member: ClassMember, ctx: TypeContext): Promise<{ 
     if (decorator.name === 'IsArray' && schema.type !== 'array') schema = { type: 'array', items: schema.type ? schema : {} };
   }
 
+  // Restricciones (`@Min(1)`, `@Length(3, 20)`, `@Matches(/^\d+$/)`): los ejemplos las respetan.
+  for (const decorator of member.decorators) {
+    const args = splitTopLevel(decorator.args).map((arg) => arg.trim());
+    const [first, second] = args.map((arg) => parseLiteralValue(arg));
+    const number = (value: unknown) => (typeof value === 'number' ? value : undefined);
+    const constraints: Partial<JsonSchema> = {
+      Min: { minimum: number(first) },
+      Max: { maximum: number(first) },
+      IsPositive: { minimum: schema.type === 'integer' ? 1 : 0.01 },
+      MinLength: { minLength: number(first) },
+      MaxLength: { maxLength: number(first) },
+      Length: { minLength: number(first), maxLength: number(second) },
+      ArrayMinSize: { minItems: number(first) },
+      Matches: { pattern: /^\/(.+)\/[a-z]*$/s.exec(args[0] ?? '')?.[1] },
+    }[decorator.name] ?? {};
+    for (const [key, value] of Object.entries(constraints)) {
+      if (value !== undefined) schema = { ...schema, [key]: value };
+    }
+  }
+
   return { schema, optional };
+}
+
+/** Lee una expresión de tipo desde `start` hasta el `;` o salto de línea del nivel superior. */
+export function readTypeExpression(code: string, start: number): string {
+  let depth = 0;
+  for (let i = start; i < code.length; i++) {
+    const char = code[i];
+    if (char === '"' || char === "'" || char === '`') {
+      for (i++; i < code.length && code[i] !== char; i++) if (code[i] === '\\') i++;
+      continue;
+    }
+    if ('<({['.includes(char)) depth++;
+    else if ('>)}]'.includes(char) && !(char === '>' && code[i - 1] === '=')) depth--;
+    else if (depth === 0 && char === ';') return code.slice(start, i);
+    else if (depth === 0 && char === '\n') {
+      const next = code.slice(i).trimStart()[0];
+      if (next !== '|' && next !== '&') return code.slice(start, i);
+    }
+  }
+  return code.slice(start);
+}
+
+/** Como `splitTopLevel`, pero también respeta los genéricos (`<...>`) de los tipos TypeScript. */
+function splitTypeLevel(text: string, separator: string): string[] {
+  const parts: string[] = [];
+  let rest = text;
+  for (;;) {
+    const index = findTopLevelChar(rest, separator);
+    if (index === -1) break;
+    parts.push(rest.slice(0, index));
+    rest = rest.slice(index + 1);
+  }
+  parts.push(rest);
+  return parts.map((part) => part.trim()).filter(Boolean);
 }
 
 /** Convierte un tipo TypeScript escrito en texto a JSON Schema. */
@@ -385,7 +461,7 @@ export async function typeTextToSchema(typeText: string, ctx: TypeContext): Prom
   let optional = false;
   let nullable = false;
 
-  const parts = splitTopLevel(text, '|').map((part) => part.trim()).filter(Boolean);
+  const parts = splitTypeLevel(text, '|').map((part) => part.trim()).filter(Boolean);
   if (parts.length > 1) {
     const rest = parts.filter((part) => {
       if (part === 'undefined') { optional = true; return false; }
@@ -417,7 +493,60 @@ export async function typeTextToSchema(typeText: string, ctx: TypeContext): Prom
     case 'unknown':
       return finish({});
   }
-  if (/^(Record|Map)</.test(text) || text === 'object' || text.startsWith('{')) return finish({ type: 'object' });
+  // Enum de objeto constante (Prisma 7, patrones "as const"): (typeof X)[keyof typeof X]
+  const constEnum = /^\(\s*typeof\s+([\w$]+)\s*\)\s*\[\s*keyof\s+typeof\s+\1\s*\]$/.exec(text);
+  if (constEnum) {
+    const code = (await ctx.loader.load(ctx.filePath)) ?? '';
+    const declaration = new RegExp(`(?:const|let|var)\\s+${constEnum[1].replace(/\$/g, '\\$')}\\s*=\\s*\\{`).exec(code);
+    if (declaration) {
+      const open = declaration.index + declaration[0].length - 1;
+      const values = parseLiteralValue(code.slice(open, findMatching(code, open) + 1));
+      if (values && typeof values === 'object') return finish({ type: 'string', enum: Object.values(values) });
+    }
+  }
+
+  // z.infer<typeof schema> / z.input / z.output
+  const zodInfer = /^(?:z|zod)\.(?:infer|input|output|TypeOf)\s*<\s*typeof\s+([\w$]+)\s*>$/.exec(text);
+  if (zodInfer) {
+    const schema = await resolveSchemaByName(zodInfer[1], ctx.filePath, ctx.loader);
+    return finish(schema ?? {});
+  }
+
+  // Tipos utilitarios
+  const utility = /^(Partial|Required|Readonly|Omit|Pick|NonNullable)\s*<([\s\S]+)>$/.exec(text);
+  if (utility) {
+    const [first, second] = splitTypeLevel(utility[2], ',');
+    const inner = (await typeTextToSchema(first, ctx)).schema;
+    const keys = (second ?? '').split('|').map((key) => parseStringLiteral(key.trim())).filter((key): key is string => key !== null);
+    const filterProps = (keep: (key: string) => boolean): JsonSchema => ({
+      ...inner,
+      properties: Object.fromEntries(Object.entries(inner.properties ?? {}).filter(([key]) => keep(key))),
+      required: inner.required?.filter(keep),
+    });
+    switch (utility[1]) {
+      case 'Partial': return finish(withoutRequired(inner));
+      case 'Required': return finish({ ...inner, required: Object.keys(inner.properties ?? {}) });
+      case 'Omit': return finish(filterProps((key) => !keys.includes(key)));
+      case 'Pick': return finish(filterProps((key) => keys.includes(key)));
+      default: return finish(inner);
+    }
+  }
+
+  // Tipo objeto en línea: { a: string; b?: number }
+  if (text.startsWith('{') && text.endsWith('}')) {
+    const schema: JsonSchema = { type: 'object', properties: {}, 'x-validated': true };
+    const required: string[] = [];
+    for (const member of scanClassMembers(text)) {
+      if (member.kind !== 'property') continue;
+      const property = member.type ? await typeTextToSchema(member.type, ctx) : { schema: {}, optional: false };
+      schema.properties![member.name] = property.schema;
+      if (!member.optional && !property.optional) required.push(member.name);
+    }
+    if (required.length > 0) schema.required = required;
+    return finish(schema);
+  }
+
+  if (/^(Record|Map)</.test(text) || text === 'object') return finish({ type: 'object' });
   const literal = parseStringLiteral(text);
   if (literal !== null) return finish({ type: 'string', enum: [literal] });
 
@@ -432,7 +561,7 @@ export async function typeTextToSchema(typeText: string, ctx: TypeContext): Prom
 export async function resolveTypeSchema(name: string, ctx: TypeContext): Promise<JsonSchema | null> {
   if (!name || ctx.depth > MAX_DEPTH) return null;
   const found = await locate(name, ctx);
-  if (!found) return resolveSchemaByName(name, ctx.filePath, ctx.loader, ctx.depth);
+  if (!found) return resolveSchemaByName(name, ctx.filePath, ctx.loader);
   const local = { ...ctx, filePath: found.filePath };
   const escaped = found.name.replace(/\$/g, '\\$');
 
@@ -447,13 +576,13 @@ export async function resolveTypeSchema(name: string, ctx: TypeContext): Promise
     return { type: typeof values[0] === 'number' ? 'number' : 'string', enum: values };
   }
 
-  const alias = new RegExp(`type\\s+${escaped}\\s*=\\s*([^;]+)`).exec(found.code);
-  if (alias) return (await typeTextToSchema(alias[1], local)).schema;
+  const alias = new RegExp(`type\\s+${escaped}\\s*(?:<[^>]*>)?\\s*=\\s*`).exec(found.code);
+  if (alias) return (await typeTextToSchema(readTypeExpression(found.code, alias.index + alias[0].length), local)).schema;
 
   const declaration = findClass(found.code, found.name) ?? findInterface(found.code, found.name);
   if (!declaration) return null;
 
-  let schema: JsonSchema = { type: 'object', properties: {} };
+  let schema: JsonSchema = { type: 'object', properties: {}, 'x-validated': true };
   const base = await heritageSchema(declaration.heritage, local);
   if (base) schema = mergeObjects(schema, base);
 

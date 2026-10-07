@@ -1,6 +1,9 @@
 import type { JsonSchema } from '../../types.js';
 import { findMatching, parseImports, parseLiteralValue, parseStringLiteral, skipWhitespace, splitTopLevel } from './code.js';
 import type { SourceLoader } from './source.js';
+import { exampleFromSchema } from './examples.js';
+
+export { exampleFromSchema };
 
 /**
  * Intérprete estático de schemas Zod (v3 y v4). No ejecuta código: lee las
@@ -32,7 +35,7 @@ const STRING_FORMATS: Record<string, string> = {
 
 const IGNORED_RECEIVERS = new Set(['JSON', 'Date', 'Number', 'Math', 'URL', 'Intl', 'BigInt']);
 
-interface Segment {
+export interface Segment {
   name: string;
   args: string | null;
 }
@@ -48,7 +51,7 @@ interface Context {
   depth: number;
 }
 
-function parseChain(expression: string): Segment[] | null {
+export function parseChain(expression: string): Segment[] | null {
   const code = expression.trim();
   const segments: Segment[] = [];
   let i = 0;
@@ -112,7 +115,7 @@ async function interpretBase(segment: Segment, ctx: Context): Promise<Interprete
     case 'boolean':
       return plain({ type: 'boolean' });
     case 'date':
-      return plain({ type: 'string', format: 'date-time' });
+      return plain({ type: 'string', format: 'date-time', 'x-date-object': true });
     case 'literal': {
       const value = parseLiteralValue(args);
       return plain(value === undefined ? {} : literalSchema(value));
@@ -197,9 +200,28 @@ async function applyModifier(current: Interpreted, segment: Segment, ctx: Contex
       return { schema: value === undefined ? schema : { ...schema, default: value }, optional: true };
     }
     case 'int':
+    case 'safe':
       return { ...current, schema: { ...schema, type: 'integer' } };
     case 'array':
       return { ...current, schema: { type: 'array', items: schema } };
+    case 'min':
+    case 'gte':
+    case 'gt':
+    case 'max':
+    case 'lte':
+    case 'lt':
+    case 'length':
+    case 'nonempty':
+    case 'positive':
+    case 'nonnegative':
+    case 'regex':
+      return { ...current, schema: applyConstraint(schema, segment.name, args) };
+    case 'pipe': {
+      // `z.string().transform(...).pipe(z.string().datetime())`: el formato final describe mejor el valor.
+      const piped = await interpretExpression(args, ctx);
+      const format = piped?.schema.format;
+      return format && schema.type === 'string' ? { ...current, schema: { ...schema, format } } : current;
+    }
     case 'or': {
       const other = await interpretExpression(args, ctx);
       return other ? { ...current, schema: { anyOf: [schema, other.schema] } } : current;
@@ -239,6 +261,43 @@ async function applyModifier(current: Interpreted, segment: Segment, ctx: Contex
   }
 }
 
+/** Traduce min/max/length/regex/positive de Zod a las restricciones de JSON Schema según el tipo. */
+function applyConstraint(schema: JsonSchema, name: string, args: string): JsonSchema {
+  const first = splitTopLevel(args)[0]?.trim() ?? '';
+  const value = Number(first);
+  const numeric = Number.isFinite(value) && first !== '';
+  const next = { ...schema };
+
+  if (name === 'regex') {
+    const literal = /^\/((?:\\.|[^/\\])+)\/[a-z]*$/.exec(first);
+    if (literal) next.pattern = literal[1];
+    return next;
+  }
+  if (schema.type === 'string') {
+    if (name === 'nonempty') next.minLength = Math.max(next.minLength ?? 0, 1);
+    if (!numeric) return next;
+    if (name === 'min' || name === 'gte') next.minLength = value;
+    if (name === 'max' || name === 'lte') next.maxLength = value;
+    if (name === 'length') { next.minLength = value; next.maxLength = value; }
+    return next;
+  }
+  if (schema.type === 'array') {
+    if (name === 'nonempty') next.minItems = 1;
+    if (numeric && (name === 'min' || name === 'length')) next.minItems = value;
+    return next;
+  }
+  if (schema.type === 'number' || schema.type === 'integer') {
+    if (name === 'positive') next.minimum = Math.max(next.minimum ?? 1, 1);
+    if (name === 'nonnegative') next.minimum = Math.max(next.minimum ?? 0, 0);
+    if (!numeric) return next;
+    if (name === 'min' || name === 'gte') next.minimum = value;
+    if (name === 'gt') next.minimum = value + 1;
+    if (name === 'max' || name === 'lte') next.maximum = value;
+    if (name === 'lt') next.maximum = value - 1;
+  }
+  return next;
+}
+
 function mergeObjects(base: JsonSchema, extra: JsonSchema): JsonSchema {
   const required = [...(base.required ?? []), ...(extra.required ?? [])];
   return {
@@ -251,7 +310,7 @@ function mergeObjects(base: JsonSchema, extra: JsonSchema): JsonSchema {
 
 async function interpretShape(block: string, ctx: Context): Promise<JsonSchema> {
   const inner = block.trim().replace(/^\{/, '').replace(/\}$/, '');
-  let result: JsonSchema = { type: 'object', properties: {} };
+  let result: JsonSchema = { type: 'object', properties: {}, 'x-validated': true };
   const required: string[] = [];
 
   for (const prop of splitTopLevel(inner)) {
@@ -284,6 +343,29 @@ function findTopLevelColon(text: string): number {
   return text.search(/:/);
 }
 
+const zodImportsCache = new WeakMap<SourceLoader, Map<string, Map<string, string>>>();
+
+/** Si `name` es un import con nombre desde `zod` en el archivo actual, devuelve el nombre original. */
+async function zodNamedImport(name: string, ctx: Context): Promise<string | null> {
+  let byFile = zodImportsCache.get(ctx.loader);
+  if (!byFile) {
+    byFile = new Map();
+    zodImportsCache.set(ctx.loader, byFile);
+  }
+  let imports = byFile.get(ctx.filePath);
+  if (!imports) {
+    imports = new Map();
+    const code = await ctx.loader.load(ctx.filePath);
+    for (const [local, binding] of parseImports(code ?? '')) {
+      if (/^zod(\/v\d|\/mini)?$/.test(binding.specifier) && binding.imported !== 'default' && binding.imported !== '*') {
+        imports.set(local, binding.imported);
+      }
+    }
+    byFile.set(ctx.filePath, imports);
+  }
+  return imports.get(name) ?? null;
+}
+
 /** Interpreta una expresión Zod (`z.string().email()`, `userSchema.optional()`, etc.). */
 export async function interpretExpression(expression: string, ctx: Context): Promise<Interpreted | null> {
   if (ctx.depth > MAX_DEPTH) return null;
@@ -294,7 +376,12 @@ export async function interpretExpression(expression: string, ctx: Context): Pro
   let current: Interpreted | null = null;
   const next = { ...ctx, depth: ctx.depth + 1 };
 
-  if ((segments[0].name === 'z' || segments[0].name === 'zod') && segments[0].args === null) {
+  const zodImport = segments[0].args !== null ? await zodNamedImport(segments[0].name, ctx) : null;
+  if (zodImport) {
+    // `import { object, string } from 'zod'` -> `object({...})`
+    current = await interpretBase({ name: zodImport, args: segments[0].args }, next);
+    index = 1;
+  } else if ((segments[0].name === 'z' || segments[0].name === 'zod') && segments[0].args === null) {
     index = 1;
     while (segments[index] && ['coerce', 'iso', 'string_format'].includes(segments[index].name) && segments[index].args === null) {
       index++;
@@ -303,7 +390,7 @@ export async function interpretExpression(expression: string, ctx: Context): Pro
     current = await interpretBase(segments[index], next);
     index++;
   } else if (segments[0].args === null) {
-    const schema = await resolveSchemaByName(segments[0].name, ctx.filePath, ctx.loader, ctx.depth + 1);
+    const schema = await resolveSchemaByName(segments[0].name, ctx.filePath, ctx.loader);
     if (!schema) return null;
     current = { schema, optional: false };
     index = 1;
@@ -326,7 +413,7 @@ export async function interpretExpression(expression: string, ctx: Context): Pro
 }
 
 /** Lee una expresión desde `start` hasta el fin de la sentencia (permite cadenas en varias líneas). */
-function readExpression(code: string, start: number): string {
+export function readExpression(code: string, start: number): string {
   for (let i = start; i < code.length; i++) {
     const char = code[i];
     if (char === '"' || char === "'" || char === '`') {
@@ -364,26 +451,35 @@ const schemaCache = new WeakMap<SourceLoader, Map<string, Promise<JsonSchema | n
  * Busca la declaración del schema `name` en `filePath` (o siguiendo sus imports /
  * re-exports) y la traduce a JSON Schema.
  */
-export function resolveSchemaByName(name: string, filePath: string, loader: SourceLoader, depth = 0): Promise<JsonSchema | null> {
+export function resolveSchemaByName(name: string, filePath: string, loader: SourceLoader): Promise<JsonSchema | null> {
   let cache = schemaCache.get(loader);
   if (!cache) {
     cache = new Map();
     schemaCache.set(loader, cache);
   }
   const key = `${filePath}#${name}`;
+  // Un schema que se referencia a sí mismo (z.lazy, imports circulares) esperaría su propia
+  // promesa y nunca se resolvería: mientras está en curso, la referencia recursiva vale null.
+  if (inProgress.has(key)) return Promise.resolve(null);
   let cached = cache.get(key);
   if (!cached) {
-    cached = resolveUncached(name, filePath, loader, depth);
+    inProgress.add(key);
+    // Un schema con nombre se resuelve siempre desde profundidad 0: el resultado se cachea y no
+    // debe depender del camino (más o menos profundo) por el que se llegó a él la primera vez.
+    // Los ciclos los corta `inProgress`.
+    cached = resolveUncached(name, filePath, loader).finally(() => inProgress.delete(key));
     cache.set(key, cached);
   }
   return cached;
 }
 
-async function resolveUncached(name: string, filePath: string, loader: SourceLoader, depth: number): Promise<JsonSchema | null> {
-  if (depth > MAX_DEPTH || IGNORED_RECEIVERS.has(name)) return null;
+const inProgress = new Set<string>();
+
+async function resolveUncached(name: string, filePath: string, loader: SourceLoader): Promise<JsonSchema | null> {
+  if (IGNORED_RECEIVERS.has(name)) return null;
   const code = await loader.load(filePath);
   if (code === null) return null;
-  const ctx: Context = { filePath, loader, depth };
+  const ctx: Context = { filePath, loader, depth: 0 };
 
   const escaped = name.replace(/\$/g, '\\$');
   const declaration = name === 'default'
@@ -399,7 +495,7 @@ async function resolveUncached(name: string, filePath: string, loader: SourceLoa
   const binding = imports.get(name);
   if (binding) {
     const target = loader.resolve(filePath, binding.specifier);
-    return target ? resolveSchemaByName(binding.imported, target, loader, depth + 1) : null;
+    return target ? resolveSchemaByName(binding.imported, target, loader) : null;
   }
 
   // Re-exports: `export { a as b } from './x'` y `export * from './x'`.
@@ -407,61 +503,17 @@ async function resolveUncached(name: string, filePath: string, loader: SourceLoa
     const target = loader.resolve(filePath, match[3]);
     if (!target) continue;
     if (match[1] === '*') {
-      const found = await resolveSchemaByName(name, target, loader, depth + 1);
+      const found = await resolveSchemaByName(name, target, loader);
       if (found) return found;
       continue;
     }
     for (const part of match[1].slice(1, -1).split(',')) {
       const [imported, local] = part.trim().split(/\s+as\s+/).map((s) => s.trim());
-      if ((local ?? imported) === name) return resolveSchemaByName(imported, target, loader, depth + 1);
+      if ((local ?? imported) === name) return resolveSchemaByName(imported, target, loader);
     }
   }
 
   return null;
-}
-
-const EXAMPLE_BY_FORMAT: Record<string, unknown> = {
-  email: 'user@example.com',
-  uuid: '123e4567-e89b-12d3-a456-426614174000',
-  uri: 'https://example.com',
-  'date-time': '2024-01-01T00:00:00.000Z',
-  date: '2024-01-01',
-  time: '12:00:00',
-  ipv4: '127.0.0.1',
-  ipv6: '::1',
-};
-
-/** Genera un valor de ejemplo realista a partir de un JSON Schema inferido. */
-export function exampleFromSchema(schema: JsonSchema, depth = 0): unknown {
-  if (depth > MAX_DEPTH) return null;
-  if (schema.default !== undefined) return schema.default;
-  if (schema.enum && schema.enum.length > 0) return schema.enum[0];
-  if (schema.anyOf && schema.anyOf.length > 0) return exampleFromSchema(schema.anyOf[0], depth + 1);
-
-  switch (schema.type) {
-    case 'string':
-      return (schema.format && EXAMPLE_BY_FORMAT[schema.format]) ?? 'string';
-    case 'number':
-    case 'integer':
-      return 10;
-    case 'boolean':
-      return true;
-    case 'array':
-      return [exampleFromSchema(schema.items ?? {}, depth + 1)];
-    case 'object': {
-      if (schema.properties) {
-        return Object.fromEntries(
-          Object.entries(schema.properties).map(([key, value]) => [key, exampleFromSchema(value, depth + 1)]),
-        );
-      }
-      if (schema.additionalProperties && typeof schema.additionalProperties === 'object') {
-        return { key: exampleFromSchema(schema.additionalProperties, depth + 1) };
-      }
-      return {};
-    }
-    default:
-      return null;
-  }
 }
 
 export interface InferredBody {

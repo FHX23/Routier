@@ -330,6 +330,99 @@ export function bodyFromFunctionExpression(code: string, start = 0): string | nu
   return null;
 }
 
+export interface ParamInfo {
+  /** Nombre del parámetro, o `null` si es un destructuring (`{ a, b }`). */
+  name: string | null;
+  /** Anotación de tipo, si la tiene. */
+  type?: string;
+  /** Claves destructuradas (`{ a, b: c }` -> `a`, `b`). */
+  keys?: string[];
+}
+
+/** Separa una lista de parámetros (`req: Request, { params }: Ctx, x = 1`) en nombres y tipos. */
+export function parseParams(paramsText: string): ParamInfo[] {
+  return splitTopLevel(paramsText).map((raw) => {
+    let text = raw.replace(/^(?:@[\w$.]+(?:\([^)]*\))?\s*)+/, '').replace(/^(?:(?:public|private|protected|readonly|override)\s+)+/, '').trim();
+    text = text.replace(/^\.\.\./, '');
+    // Separar el valor por defecto en el nivel superior.
+    const [withoutDefault] = splitTopLevel(text, '=');
+    const colon = findTopLevelChar(withoutDefault, ':');
+    const binding = (colon === -1 ? withoutDefault : withoutDefault.slice(0, colon)).trim().replace(/\?$/, '');
+    const type = colon === -1 ? undefined : withoutDefault.slice(colon + 1).trim();
+    if (binding.startsWith('{')) {
+      const keys = splitTopLevel(binding.slice(1, -1)).map((part) => part.split(/[:=]/)[0].trim().replace(/^\.\.\./, '')).filter(Boolean);
+      return { name: null, type, keys };
+    }
+    return { name: /^[\w$]+$/.test(binding) ? binding : null, type };
+  });
+}
+
+/** Índice del primer `char` fuera de paréntesis, llaves, corchetes, genéricos y strings. */
+export function findTopLevelChar(text: string, char: string): number {
+  let depth = 0;
+  for (let i = 0; i < text.length; i++) {
+    const current = text[i];
+    if (isLiteralStart(text, i)) { i = skipLiteral(text, i); continue; }
+    if ('({[<'.includes(current)) depth++;
+    else if (')}]>'.includes(current) && !(current === '>' && text[i - 1] === '=')) depth--;
+    else if (current === char && depth === 0) return i;
+  }
+  return -1;
+}
+
+export interface FunctionInfo {
+  params: ParamInfo[];
+  body: string;
+}
+
+function functionAt(code: string, parenIndex: number): FunctionInfo | null {
+  const close = findMatching(code, parenIndex);
+  if (close === -1) return null;
+  const body = extractBodyAfterParams(code, parenIndex);
+  return body === null ? null : { params: parseParams(code.slice(parenIndex + 1, close)), body };
+}
+
+/**
+ * Busca la función o método `name` y devuelve sus parámetros y cuerpo. Soporta declaraciones,
+ * `const name = (async) (...) => {}`, `const name = function (...) {}` y métodos de clase u objeto.
+ */
+export function findFunction(code: string, name: string, depth = 0): FunctionInfo | null {
+  if (depth > 3) return null;
+  const escaped = escapeRegExp(name);
+
+  const declaration = new RegExp(`(?:^|[^\\w$.])(?:async\\s+)?function\\s*\\*?\\s*${escaped}\\s*(?:<[^>]*>)?\\s*\\(`, 'm').exec(code);
+  if (declaration) return functionAt(code, declaration.index + declaration[0].length - 1);
+
+  const assignment = new RegExp(`(?:^|[^\\w$.])(?:const|let|var)\\s+${escaped}\\s*(?::[^=]+)?=(?!=)`, 'm').exec(code);
+  if (assignment) {
+    let i = skipWhitespace(code, assignment.index + assignment[0].length);
+    if (code.startsWith('async', i) && !/[\w$]/.test(code[i + 5] ?? '')) i = skipWhitespace(code, i + 5);
+    if (code.startsWith('function', i)) {
+      const paren = code.indexOf('(', i);
+      return paren === -1 ? null : functionAt(code, paren);
+    }
+    if (code[i] === '(') return functionAt(code, i);
+    const single = /^([\w$]+)\s*=>/.exec(code.slice(i));
+    if (single) {
+      const body = bodyFromFunctionExpression(code, i);
+      return body === null ? null : { params: [{ name: single[1] }], body };
+    }
+    const alias = /^([\w$]+)\s*;?\s*$/m.exec(code.slice(i, code.indexOf('\n', i) === -1 ? undefined : code.indexOf('\n', i)));
+    if (alias && alias[1] !== name) return findFunction(code, alias[1], depth + 1);
+  }
+
+  const method = new RegExp(`(?:^|[\\s;{},])(?:(?:public|private|protected|static|async|override)\\s+)*${escaped}\\s*(?:<[^>]*>)?\\s*\\(`, 'gm');
+  for (const match of code.matchAll(method)) {
+    const paren = match.index! + match[0].length - 1;
+    const close = findMatching(code, paren);
+    if (close === -1) continue;
+    const after = skipWhitespace(code, skipReturnType(code, close + 1));
+    if (code[after] !== '{') continue;
+    return functionAt(code, paren);
+  }
+  return null;
+}
+
 /**
  * Busca la función `name` (declaración, `const name = ...` con flecha/función,
  * o envuelta como `const name = withAuth(async (req) => {...})`) y devuelve su cuerpo.
