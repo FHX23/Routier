@@ -68,7 +68,7 @@ The files are written to `./routier-exports` inside the scanned project:
 | `routier-postman.json` | Postman → **Import** → select the file |
 | `routier-insomnia.json` | Insomnia → **Import** → select the file |
 
-The collections include a `baseUrl` variable, a `token` variable for requests that need `Authorization: Bearer …` and a `session` variable for cookie-based sessions (sent as a `Cookie` header with the right cookie name), so you only fill them in once. Optional query parameters are included but disabled, ready to be switched on.
+The collections include a `baseUrl` variable, a `token` variable for requests that need `Authorization: Bearer …` and a `session` variable for cookie-based sessions (sent as a `Cookie` header with the right cookie name), so you only fill them in once. Required query parameters are enabled with a valid example value; optional ones are included but disabled, ready to be switched on.
 
 ## What Routier detects
 
@@ -84,7 +84,7 @@ The framework is detected from your `package.json`. Use `--framework` to force o
 
 Zod support covers Zod 3 and 4 (including named imports such as `import { object, string } from 'zod'`): nested objects, arrays, enums, literals, unions, records, `z.email()`/`z.uuid()`/`z.url()`, `.optional()`, `.nullable()`, `.default()`, `.extend()`, `.pick()`, `.omit()`, `.partial()`, and schemas imported from other files (relative paths and the `@/` alias). Joi (`Joi.object().keys(...)`) and TypeBox (`Type.Object(...)`) are interpreted too, as are TypeScript types such as `Partial<Omit<T, 'id'>>`, `z.infer<typeof schema>` and Prisma enums.
 
-Example bodies respect the validations Routier finds (`min`/`max`, regular expressions, formats, enums and defaults), so the generated requests pass the server's validation without editing: for example, a Chilean RUT pattern produces `1.111.111-1` and `price: z.number().min(100)` produces `100`.
+Example bodies respect the validations Routier finds (`min`/`max`, regular expressions, formats, enums and defaults, also from class-validator decorators such as `@Min` or `@Matches`), so the generated requests pass the server's validation without editing: for example, a Chilean RUT pattern produces `1.111.111-1` and `price: z.number().min(100)` produces `100`. Allow-lists checked in the handler (`if (!PLANS.includes(plan))`) are documented as enums too.
 
 Example of what Routier produces from a Next.js handler:
 

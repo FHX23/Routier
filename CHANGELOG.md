@@ -17,6 +17,9 @@ This release was driven by testing Routier against nine real projects (three pri
 - Query parameters read by services (`getArticles(req.query)` → `query.tag`).
 - GraphQL: GET endpoints, the endpoint's authentication on every operation, and realistic values for custom scalars (`DateTime`, `JSON`, `UUID`...).
 - TypeScript utility types (`Partial`, `Omit`, `Pick`, `Required`), inline object types, `z.infer<typeof schema>`, Prisma 7 enums and literal-union casts.
+- **Allow-lists checked in code become enums**: `if (!PLANS.includes(plan))`, `!ALLOWED.has(body.kind)`, `!['a', 'b'].includes(x)`, `!(x in PRICES)` and `Object.keys(PRICES).includes(x)`, with the list declared locally or imported.
+- **Required query parameters**: query schemas from Joi, Zod, TypeBox, JSON Schema and NestJS `@Query()` DTOs keep their types and required fields. Required parameters are documented as `required` in OpenAPI and exported enabled, with a valid example value, in Postman and Insomnia.
+- class-validator constraints (`@Min`, `@Max`, `@IsPositive`, `@MinLength`, `@MaxLength`, `@Length`, `@Matches`, `@ArrayMinSize`) are applied to DTO schemas and examples.
 
 ### Changed
 
