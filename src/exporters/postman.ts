@@ -1,7 +1,7 @@
 import type { GroupBy, SortMode } from './index.js';
 import type { Endpoint, GraphQLOperation, HttpMethod, MethodMetadata, ScanResult } from '../types.js';
 import { graphqlPathOf, parseOpenAPI } from '../generators/openapi.js';
-import { formFields, graphqlHeaders, graphqlTargetOf, requestHeaders, variablesUsed, type GraphqlTarget } from './request-parts.js';
+import { formFields, graphqlHeaders, graphqlTargetOf, queryParts, requestHeaders, variablesUsed, type GraphqlTarget, type QueryPart } from './request-parts.js';
 
 interface ExportOptions {
   name?: string;
@@ -183,7 +183,7 @@ function restToItem(request: RestRequest, baseUrl: string): PostmanItem {
       method: request.method,
       header: headers,
       body,
-      url: buildPostmanUrl(baseUrl, request.endpoint.path, meta?.query),
+      url: buildPostmanUrl(baseUrl, request.endpoint.path, queryParts(meta)),
     },
   };
 }
@@ -214,15 +214,16 @@ function sortGraphqlOperations(operations: GraphQLOperation[], sort: SortMode): 
   return [...operations].sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function buildPostmanUrl(baseUrl: string, routePath: string, query: string[] = []) {
+function buildPostmanUrl(baseUrl: string, routePath: string, query: QueryPart[] = []) {
   const base = baseUrl.replace(/\/$/, '');
-  // Los query params van desactivados: el usuario activa los que necesita.
-  const raw = `${base}${routePath}`;
+  // Los query params opcionales van desactivados: el usuario activa los que necesita.
+  const active = query.filter((param) => !param.disabled).map((param) => `${param.name}=${encodeURIComponent(param.value)}`);
+  const raw = `${base}${routePath}${active.length > 0 ? `?${active.join('&')}` : ''}`;
   const pathSegments = routePath.split('/').filter(Boolean);
   const variables = pathSegments.filter((segment) => segment.startsWith(':')).map((segment) => ({ key: segment.slice(1), value: '' }));
   const extras = {
     path: pathSegments,
-    ...(query.length > 0 ? { query: query.map((key) => ({ key, value: '', disabled: true })) } : {}),
+    ...(query.length > 0 ? { query: query.map(({ name, value, disabled }) => ({ key: name, value, ...(disabled ? { disabled } : {}) })) } : {}),
     ...(variables.length > 0 ? { variable: variables } : {}),
   };
 

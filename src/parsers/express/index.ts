@@ -139,8 +139,8 @@ function analyseRouterExpressions(info: FileInfo) {
     // Los eslabones se procesan en orden, con la posición real de cada uno para `.route()`.
     let cursor = close + 1;
     for (const link of chain) {
-      const linkStart = code.indexOf(`.${link.verb}`, cursor) === -1 ? cursor : code.indexOf(link.verb, cursor);
-      const linkOpen = code.indexOf('(', linkStart);
+      const dot = code.indexOf(`.${link.verb}`, cursor);
+      const linkOpen = code.indexOf('(', dot === -1 ? cursor : dot);
       const linkClose = findMatching(code, linkOpen);
       cursor = linkClose + 1;
       if (!CHAIN_VERBS.has(link.verb)) break;

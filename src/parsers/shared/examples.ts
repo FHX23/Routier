@@ -261,8 +261,9 @@ function stringExample(schema: JsonSchema, name?: string): string {
   return fitLength('string', schema);
 }
 
-function numberExample(schema: JsonSchema): number {
-  let value = 10;
+function numberExample(schema: JsonSchema, name?: string): number {
+  // Una página que exista: `page=10` suele devolver una lista vacía.
+  let value = name && /^(?:page|pageNumber|pageIndex)$/i.test(name) ? 1 : 10;
   if (schema.minimum !== undefined && value < schema.minimum) value = schema.minimum;
   if (schema.maximum !== undefined && value > schema.maximum) value = schema.maximum;
   if (schema.type === 'integer') value = Math.ceil(value);
@@ -285,7 +286,7 @@ export function exampleFromSchema(schema: JsonSchema, name?: string, depth = 0):
       return stringExample(schema, name);
     case 'number':
     case 'integer':
-      return numberExample(schema);
+      return numberExample(schema, name);
     case 'boolean':
       return true;
     case 'array': {

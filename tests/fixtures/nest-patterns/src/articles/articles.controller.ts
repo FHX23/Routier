@@ -2,6 +2,7 @@ import { Body, Controller, Delete, Get, Param, Post, Query, UploadedFile, UseInt
 import { ApiBearerAuth } from '@nestjs/swagger';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ArticlesService } from './articles.service';
+import { SearchArticlesDto } from './dto/search-articles.dto';
 
 // @ApiBearerAuth es solo documentación: la auth real viene de forRoutes().
 @ApiBearerAuth()
@@ -12,6 +13,11 @@ export class ArticlesController {
   @Get()
   findAll(@Query() query) {
     return this.articlesService.findAll(query);
+  }
+
+  @Get('search')
+  search(@Query() filters: SearchArticlesDto) {
+    return filters;
   }
 
   @Post()

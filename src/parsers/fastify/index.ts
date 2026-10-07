@@ -14,7 +14,7 @@ import {
 import { AUTH_MIDDLEWARE, inferHandlerMetadata, isAuthMiddleware, normalizeRoutePath, routeParamsOf } from '../shared/handler.js';
 import { SourceLoader } from '../shared/source.js';
 import { AuthDetector } from '../shared/auth.js';
-import { applyBody } from '../shared/metadata.js';
+import { applyBody, applyQuerySchema } from '../shared/metadata.js';
 import { interpretValidatorObject, resolveExpression } from '../shared/schemas.js';
 import { SOURCE_GLOB, SOURCE_IGNORE } from '../express/index.js';
 
@@ -242,7 +242,7 @@ async function metadataFromSchema(schemaText: string | undefined, info: FileInfo
       schema: validator?.body ?? { type: 'object', properties: { file: { type: 'string', format: 'binary' } } },
     });
   }
-  if (validator?.query?.length) meta.query = validator.query;
+  applyQuerySchema(meta, validator?.query);
   const headers = (validator?.headers ?? []).map((name) => (name.toLowerCase() === 'authorization' ? 'Authorization' : name));
   if (headers.length > 0) meta.headers = headers;
   return meta;
@@ -259,6 +259,7 @@ function mergeMetadata(base: MethodMetadata | undefined, extra: MethodMetadata):
   const query = union(base?.query, extra.query);
   if (headers.length > 0) merged.headers = headers;
   if (query.length > 0) merged.query = query;
+  if (extra.querySchema) merged.querySchema = extra.querySchema;
   if (extra.bodySchema || extra.bodyContentType) {
     merged.body = extra.body;
     merged.bodySchema = extra.bodySchema;
@@ -289,7 +290,7 @@ export async function scanFastifyRoutes(options: AdapterOptions): Promise<Adapte
   /** Auth heredada de los archivos autohooks de las carpetas que contienen a `file`. */
   const directoryAuth = (file: string, routePath: string): AuthRequirement | undefined => {
     for (const hooks of directoryHooks) {
-      const inside = hooks.cascade ? file.startsWith(`${hooks.dir}/`) : path.posix.dirname(file) === hooks.dir;
+      const inside = hooks.cascade ? hooks.dir === '.' || file.startsWith(`${hooks.dir}/`) : path.posix.dirname(file) === hooks.dir;
       if (!inside) continue;
       for (const scope of hookScopes.get(hooks.file) ?? []) {
         if (scope.exempt.some((prefix) => routePath.startsWith(prefix))) continue;

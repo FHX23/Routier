@@ -1,7 +1,7 @@
 import type { GroupBy, SortMode } from './index.js';
 import type { Endpoint, GraphQLOperation, HttpMethod, ScanResult } from '../types.js';
 import { graphqlPathOf, parseOpenAPI } from '../generators/openapi.js';
-import { formFields, graphqlHeaders, graphqlTargetOf, requestHeaders, variablesUsed, type GraphqlTarget } from './request-parts.js';
+import { formFields, graphqlHeaders, graphqlTargetOf, queryParts, requestHeaders, variablesUsed, type GraphqlTarget } from './request-parts.js';
 
 interface ExportOptions {
   name?: string;
@@ -222,7 +222,7 @@ function restToResource(request: RestRequest, parentId: string, generatedIds: Se
     url: `{{ _.baseUrl }}${request.endpoint.path}`,
     headers,
     body,
-    parameters: (meta?.query ?? []).map((name) => ({ name, value: '', disabled: true })),
+    parameters: queryParts(meta),
     ...(pathParameters.length > 0 ? { pathParameters } : {}),
   };
 }

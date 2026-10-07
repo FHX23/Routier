@@ -156,8 +156,10 @@ export async function interpretJoi(text: string, filePath: string, loader: Sourc
       case 'min': case 'max': case 'length':
         if (Number.isFinite(number) && first !== '') {
           const isString = schema.type === 'string';
-          if (segment.name !== 'max') schema = { ...schema, ...(isString ? { minLength: number } : schema.type === 'array' ? { minItems: number } : { minimum: number }) };
-          if (segment.name !== 'min') schema = { ...schema, ...(isString ? { maxLength: number } : { maximum: number }) };
+          const isArray = schema.type === 'array';
+          if (segment.name !== 'max') schema = { ...schema, ...(isString ? { minLength: number } : isArray ? { minItems: number } : { minimum: number }) };
+          // El máximo de un array no limita los ejemplos (se genera un solo elemento).
+          if (segment.name !== 'min' && !isArray) schema = { ...schema, ...(isString ? { maxLength: number } : { maximum: number }) };
         }
         break;
       case 'pattern': case 'regex': {
@@ -177,7 +179,7 @@ export async function interpretJoi(text: string, filePath: string, loader: Sourc
       case 'keys':
         if (first.startsWith('{')) {
           const extra = await joiObject(first, file, loader, depth);
-          schema = { type: 'object', properties: { ...schema.properties, ...extra.properties }, required: [...(schema.required ?? []), ...(extra.required ?? [])] };
+          schema = { ...extra, properties: { ...schema.properties, ...extra.properties }, required: [...(schema.required ?? []), ...(extra.required ?? [])] };
           if (schema.required?.length === 0) delete schema.required;
         }
         break;
@@ -274,11 +276,18 @@ export async function interpretSchema(text: string, filePath: string, loader: So
   return zod?.schema ?? null;
 }
 
+export interface ValidatorObject {
+  body?: JsonSchema;
+  /** Schema de la query (propiedades y obligatorios). */
+  query?: JsonSchema;
+  headers?: string[];
+}
+
 /**
  * Objeto validador `{ body, query, params }` (celebrate, validate(schema) de boilerplates,
  * schema de ruta de Fastify): devuelve el schema del body y las claves de la query.
  */
-export async function interpretValidatorObject(text: string, filePath: string, loader: SourceLoader): Promise<{ body?: JsonSchema; query?: string[]; headers?: string[] } | null> {
+export async function interpretValidatorObject(text: string, filePath: string, loader: SourceLoader): Promise<ValidatorObject | null> {
   const resolved = await resolveExpression(text, filePath, loader);
   if (!resolved || !resolved.text.trim().startsWith('{')) return null;
   const props = objectLiteralProps(resolved.text.trim());
@@ -288,9 +297,12 @@ export async function interpretValidatorObject(text: string, filePath: string, l
   const headersText = pick('headers');
   if (!bodyText && !queryText && !headersText) return null;
 
-  const result: { body?: JsonSchema; query?: string[]; headers?: string[] } = {};
+  const result: ValidatorObject = {};
   if (bodyText) result.body = (await interpretSchema(bodyText, resolved.filePath, loader)) ?? undefined;
-  if (queryText) result.query = Object.keys((await interpretSchema(queryText, resolved.filePath, loader))?.properties ?? {});
+  if (queryText) {
+    const schema = await interpretSchema(queryText, resolved.filePath, loader);
+    if (schema?.properties) result.query = schema;
+  }
   if (headersText) result.headers = Object.keys((await interpretSchema(headersText, resolved.filePath, loader))?.properties ?? {});
   return result;
 }

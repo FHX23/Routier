@@ -1,5 +1,5 @@
 import type { BodyContentType, JsonSchema } from '../../types.js';
-import { findFunction, findMatching, parseImports, parseLiteralValue, resolveExportedLocal, skipWhitespace, splitTopLevel, type FunctionInfo } from './code.js';
+import { findFunction, findMatching, objectLiteralProps, parseImports, parseLiteralValue, resolveExportedLocal, skipWhitespace, splitTopLevel, type FunctionInfo } from './code.js';
 import { readTypeExpression, typeTextToSchema } from './classes.js';
 import type { SourceLoader } from './source.js';
 import { resolveSchemaByName } from './zod.js';
@@ -112,13 +112,73 @@ async function schemaFromType(type: string, ctx: FlowContext): Promise<JsonSchem
   return schema.type || schema.properties || schema.enum || schema.anyOf ? schema : null;
 }
 
+type Literal = string | number;
+
+/**
+ * `['a', 'b']`, `new Set(['a', 'b'])`, `Object.keys({ a: 1 })` o un objeto `{ a: 1 }` (sus claves,
+ * para `x in OBJ` y `Object.keys(OBJ)`) → sus valores literales.
+ */
+function literalValues(text: string): Literal[] | null {
+  let source = text.trim();
+  const wrapped = /^(?:new\s+Set\s*(?:<[^>]*>)?|Object\s*\.\s*keys)\s*\(\s*([\s\S]*)\)$/.exec(source);
+  if (wrapped) source = wrapped[1].trim();
+  if (source.startsWith('{')) {
+    const props = [...objectLiteralProps(source).keys()];
+    return props.length > 0 ? props : null;
+  }
+  const value = parseLiteralValue(source);
+  if (!Array.isArray(value) || value.length === 0) return null;
+  return value.every((item) => typeof item === 'string' || typeof item === 'number') ? (value as Literal[]) : null;
+}
+
+/** Valor inicial de una constante (`const X = [...]`, `new Set([...])`, `{...}`) en `code`. */
+function constantInitializer(code: string, name: string): string | null {
+  const declaration = new RegExp(`(?:const|let|var)\\s+${name.replace(/\$/g, '\\$')}\\s*(?::[^=]+)?=\\s*`).exec(code);
+  if (!declaration) return null;
+  const start = declaration.index + declaration[0].length;
+  const wrapper = /^(?:new\s+Set\s*(?:<[^>]*>)?|Object\s*\.\s*keys)\s*\(/.exec(code.slice(start));
+  const open = wrapper ? start + wrapper[0].length - 1 : start;
+  if (!wrapper && code[open] !== '[' && code[open] !== '{') return null;
+  const close = findMatching(code, open);
+  return close === -1 ? null : code.slice(start, close + 1);
+}
+
+/** Valores de una lista referida por nombre, en el archivo o importada de otro. */
+async function namedList(name: string, ctx: FlowContext): Promise<Literal[] | null> {
+  const code = await ctx.loader.load(ctx.filePath);
+  if (!code) return null;
+  const local = constantInitializer(code, name);
+  if (local) return literalValues(local);
+  const binding = parseImports(code).get(name);
+  const target = binding && binding.imported !== 'default' ? ctx.loader.resolve(ctx.filePath, binding.specifier) : null;
+  const targetCode = target ? await ctx.loader.load(target) : null;
+  const imported = targetCode ? constantInitializer(targetCode, binding!.imported) : null;
+  return imported ? literalValues(imported) : null;
+}
+
+/**
+ * Valores permitidos de `expr` según una lista blanca que el handler comprueba:
+ * `if (!PLANS.includes(plan))`, `!ALLOWED.has(body.kind)`, `!['a', 'b'].includes(x)`, `!(x in PRICES)`.
+ */
+async function allowedValues(code: string, expr: string, ctx: FlowContext): Promise<Literal[] | null> {
+  const arg = `\\(\\s*${escape(expr)}\\s*(?:as\\s+[^)]+)?\\)`;
+  const inline = new RegExp(`!\\s*(\\[[^\\[\\]]*\\])\\s*\\.\\s*includes\\s*${arg}`).exec(code);
+  if (inline) return literalValues(inline[1]);
+  const keys = new RegExp(`!\\s*(Object\\s*\\.\\s*keys\\s*\\(\\s*[\\w$]+\\s*\\))\\s*\\.\\s*includes\\s*${arg}`).exec(code);
+  const named = new RegExp(`!\\s*([\\w$]+)\\s*\\.\\s*(?:includes|has)\\s*${arg}`).exec(code)
+    ?? new RegExp(`!\\s*\\(\\s*${escape(expr)}\\s+in\\s+([\\w$]+)\\s*\\)`).exec(code);
+  const name = keys ? /\(\s*([\w$]+)/.exec(keys[1])![1] : named?.[1];
+  return name ? namedList(name, ctx) : null;
+}
+
 /** Resuelve la función llamada (`fn`, `obj.fn`, `this.service.fn`) a sus parámetros y cuerpo. */
-async function resolveCallee(callee: string, _snippet: string, ctx: FlowContext): Promise<(FunctionInfo & { filePath: string }) | null> {
+async function resolveCallee(callee: string, snippet: string, ctx: FlowContext): Promise<(FunctionInfo & { filePath: string }) | null> {
   const parts = callee.split('.').map((part) => part.trim()).filter(Boolean);
   const name = parts[parts.length - 1];
   if (!name || NOT_FIELDS.has(name) || ['JSON', 'Object', 'Array', 'console', 'Number', 'String', 'Boolean', 'Math', 'Date', 'Promise'].includes(parts[0])) return null;
-  // Imports, funciones locales y propiedades del constructor se buscan en el archivo completo.
-  const code = (await ctx.loader.load(ctx.filePath)) ?? _snippet;
+  // Imports, funciones locales y propiedades del constructor se buscan en el archivo completo
+  // (el fragmento solo se usa si el archivo no se puede leer).
+  const code = (await ctx.loader.load(ctx.filePath)) ?? snippet;
 
   // this.service.method(...) (NestJS): tipo de la propiedad declarada en el constructor.
   if (parts[0] === 'this' && parts.length === 3) {
@@ -203,6 +263,16 @@ async function collect(code: string, roots: Root[], tree: FieldNode, ctx: FlowCo
     seen.add(key);
     const expr = escape(root.expr);
     const here = nodeAt(tree, root.path);
+
+    // Lista blanca comprobada en el código: `if (!PLANS.includes(plan)) return 400`.
+    if (root.path.length > 0 && here.source !== 'schema' && !here.schema?.enum) {
+      const values = await allowedValues(code, root.expr, ctx);
+      if (values) {
+        const types = new Set(values.map((value) => typeof value));
+        const type = types.size === 1 ? (types.has('number') ? 'number' : 'string') : undefined;
+        setSchema(here, type ? { type, enum: values } : { enum: values }, 'type');
+      }
+    }
 
     // Alias y variables tipadas: const data = <expr>; const data: T = <expr>; const data = <expr> as T
     for (const match of code.matchAll(new RegExp(`(?:const|let|var)\\s+([\\w$]+)\\s*(?::\\s*([^=;]+?))?\\s*=\\s*\\(?\\s*${expr}${END}`, 'g'))) {

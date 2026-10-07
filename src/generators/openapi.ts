@@ -1,4 +1,5 @@
 import type { AuthRequirement, BodyContentType, Endpoint, GraphQLOperation, HttpMethod, JsonSchema, MethodMetadata, ScanResult } from '../types.js';
+import { exampleFromSchema } from '../parsers/shared/examples.js';
 
 export const DEFAULT_GRAPHQL_PATH = '/api/graphql';
 
@@ -70,7 +71,8 @@ class SecurityRegistry {
   }
 }
 
-function authOf(meta: MethodMetadata | undefined): AuthRequirement | undefined {
+/** Autenticación de una operación: la declarada o, en metadatos antiguos, un header `Authorization`. */
+export function authOf(meta: MethodMetadata | undefined): AuthRequirement | undefined {
   if (meta?.auth) return meta.auth;
   return meta?.headers?.some((header) => header.toLowerCase() === 'authorization') ? { type: 'bearer' } : undefined;
 }
@@ -116,7 +118,12 @@ function buildRestOperation(endpoint: Endpoint, method: HttpMethod, openapiPath:
   }
 
   for (const name of meta?.query ?? []) {
-    parameters.push({ name, in: 'query', required: false, schema: { type: 'string' } });
+    const declared = meta?.querySchema?.properties?.[name];
+    // Los objetos anidados no tienen una forma estándar en la query: se documentan como texto.
+    const schema: JsonSchema = declared && (declared.type || declared.enum) && declared.type !== 'object' ? publicSchema(declared) : { type: 'string' };
+    const required = meta?.querySchema?.required?.includes(name) ?? false;
+    const example = required ? exampleFromSchema(schema, name) : undefined;
+    parameters.push({ name, in: 'query', required, schema, ...(example !== undefined ? { example } : {}) });
   }
 
   const operation: any = {
@@ -136,7 +143,7 @@ function buildRestOperation(endpoint: Endpoint, method: HttpMethod, openapiPath:
   operation.responses = { '200': { description: 'Successful response' } };
   if (requiresAuth) operation.responses['401'] = { description: 'Unauthorized' };
 
-  return { operation, requiresAuth };
+  return operation;
 }
 
 function buildGraphQLPathItem(operations: GraphQLOperation[], endpoint: Endpoint | undefined, security: SecurityRegistry) {
@@ -228,7 +235,7 @@ export function generateOpenAPI(scan: ScanResult, options: OpenAPIOptions) {
     for (const method of endpoint.methods) {
       // Si dos archivos declaran el mismo método y path (controladores alternativos), gana el primero.
       if (pathItem[method.toLowerCase()]) continue;
-      const { operation } = buildRestOperation(endpoint, method, openapiPath, usedIds, security);
+      const operation = buildRestOperation(endpoint, method, openapiPath, usedIds, security);
       operation.tags.forEach((tag: string) => tags.add(tag));
       pathItem[method.toLowerCase()] = operation;
     }
@@ -287,8 +294,16 @@ function metadataFromOperation(operation: any, schemes: Record<string, any>): Me
   if (auth?.type === 'bearer') headers.unshift('Authorization');
   if (headers.length > 0) meta.headers = headers;
 
-  const query = params.filter((param) => param.in === 'query').map((param) => param.name as string);
-  if (query.length > 0) meta.query = query;
+  const queryParams = params.filter((param) => param.in === 'query');
+  if (queryParams.length > 0) {
+    meta.query = queryParams.map((param) => param.name as string);
+    meta.querySchema = {
+      type: 'object',
+      properties: Object.fromEntries(queryParams.map((param) => [param.name, (param.schema ?? { type: 'string' }) as JsonSchema])),
+    };
+    const required = queryParams.filter((param) => param.required).map((param) => param.name as string);
+    if (required.length > 0) meta.querySchema.required = required;
+  }
 
   const content = operation.requestBody?.content ?? {};
   const contentType = Object.keys(content)[0] as BodyContentType | undefined;

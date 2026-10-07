@@ -44,6 +44,8 @@ export interface MethodMetadata {
   headers?: string[];
   /** Parámetros de query string leídos por el handler. */
   query?: string[];
+  /** Schema de la query según el validador: tipos de cada parámetro y cuáles son obligatorios. */
+  querySchema?: JsonSchema;
   /** Body JSON de ejemplo (serializado). */
   body?: string;
   /** Schema del body inferido (por ejemplo desde Zod). */

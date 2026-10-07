@@ -13,7 +13,7 @@ import {
 } from '../shared/classes.js';
 import { isAuthMiddleware, normalizeRoutePath, routeParamsOf } from '../shared/handler.js';
 import { inferTrackedQuery, trackValue } from '../shared/flow.js';
-import { applyBody } from '../shared/metadata.js';
+import { applyBody, applyQuerySchema } from '../shared/metadata.js';
 import { inferHeaders, inferQueryParams } from '../shared/request.js';
 import { SourceLoader } from '../shared/source.js';
 import { inferZodBody, resolveSchemaByName } from '../shared/zod.js';
@@ -226,6 +226,7 @@ async function inferMethodMetadata(
   const routeParams = routeParamsOf(routePath);
   const ctx = { filePath, loader, depth: 0 };
   let bodySchema: JsonSchema | null = null;
+  let querySchema: JsonSchema | null = null;
   const bodyFields: Record<string, JsonSchema> = {};
 
   const addHeader = (name: string) => {
@@ -245,8 +246,10 @@ async function inferMethodMetadata(
       if (decorator.name === 'Query') {
         if (key) addQuery(key);
         else {
-          const typed = param.type ? Object.keys((await typeTextToSchema(param.type, ctx)).schema.properties ?? {}) : [];
+          const dto = param.type ? (await typeTextToSchema(param.type, ctx)).schema : null;
+          const typed = Object.keys(dto?.properties ?? {});
           typed.forEach(addQuery);
+          if (typed.length > 0) querySchema = dto!;
           // `@Query() query` sin tipo útil: seguir el objeto hasta el servicio (`this.service.findAll(query)`).
           if (typed.length === 0 && param.name && member.body) {
             (await inferTrackedQuery(member.body, [{ expr: param.name, path: [] }], { filePath, loader })).forEach(addQuery);
@@ -302,6 +305,7 @@ async function inferMethodMetadata(
   if (auth) meta.auth = { type: 'bearer' };
   if (headers.length > 0) meta.headers = headers;
   if (query.length > 0) meta.query = query;
+  applyQuerySchema(meta, querySchema);
   if (BODY_METHODS.includes(method) && uploads.length > 0) {
     const binary: JsonSchema = { type: 'string', format: 'binary' };
     const files = Object.fromEntries(uploads.map((match) => [match[3] ?? 'file', match[1] === 'Files' ? ({ type: 'array', items: binary } as JsonSchema) : binary]));

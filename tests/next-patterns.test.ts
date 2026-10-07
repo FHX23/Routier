@@ -33,8 +33,19 @@ test('uses TypeScript types: utility types in other files, inline `as` literals 
 test('reads destructured bodies with defaults', async () => {
   const { byPath } = await scan();
   const checkout = byPath.get('/api/checkout')!;
-  assert.deepEqual(fields(checkout, 'POST'), ['amount', 'currency', 'email', 'isRecurring']);
+  assert.deepEqual(fields(checkout, 'POST'), ['amount', 'currency', 'email', 'interval', 'isRecurring', 'plan']);
   assert.equal(JSON.parse(checkout.methodsMetadata!.POST!.body!).isRecurring, false);
+});
+
+test('allow-lists checked in the handler become enums (local, imported, Set and inline lists)', async () => {
+  const { byPath } = await scan();
+  const post = byPath.get('/api/checkout')!.methodsMetadata!.POST!;
+  const properties = post.bodySchema!.properties!;
+  assert.deepEqual(properties.currency.enum, ['CLP', 'USD']);
+  assert.deepEqual(properties.plan.enum, ['basic', 'professional']);
+  assert.deepEqual(properties.interval.enum, ['month', 'year']);
+  assert.equal(properties.email.enum, undefined);
+  assert.equal(JSON.parse(post.body!).plan, 'basic');
 });
 
 test('only Zod validations applied to the body define it (not params validation)', async () => {

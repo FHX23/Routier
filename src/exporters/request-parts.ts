@@ -1,5 +1,6 @@
-import type { AuthRequirement, JsonSchema, MethodMetadata, ScanResult } from '../types.js';
+import type { JsonSchema, MethodMetadata, ScanResult } from '../types.js';
 import { exampleFromSchema } from '../parsers/shared/examples.js';
+import { authOf } from '../generators/openapi.js';
 
 /**
  * Partes comunes de una request para los exportadores (Postman e Insomnia):
@@ -41,11 +42,6 @@ export function variableName(header: string, style: VariableStyle): string {
 
 export function template(name: string, style: VariableStyle): string {
   return style === 'postman' ? `{{${name}}}` : `{{ _.${name} }}`;
-}
-
-export function authOf(meta: MethodMetadata | undefined): AuthRequirement | undefined {
-  if (meta?.auth) return meta.auth;
-  return meta?.headers?.some((header) => header.toLowerCase() === 'authorization') ? { type: 'bearer' } : undefined;
 }
 
 export function requestHeaders(meta: MethodMetadata | undefined, style: VariableStyle): HeaderPart[] {
@@ -100,5 +96,27 @@ export function formFields(schema: JsonSchema | undefined): FormField[] {
     const example = file ? '' : exampleFromSchema(item, name);
     const value = example === null || example === undefined ? '' : typeof example === 'object' ? JSON.stringify(example) : String(example);
     return { name, file, value };
+  });
+}
+
+export interface QueryPart {
+  name: string;
+  value: string;
+  disabled?: boolean;
+}
+
+/**
+ * Query params de una request: los obligatorios van activos con un valor de ejemplo y los
+ * opcionales desactivados (con un ejemplo si se conoce su tipo), listos para activarlos.
+ */
+export function queryParts(meta: MethodMetadata | undefined): QueryPart[] {
+  return (meta?.query ?? []).map((name) => {
+    const schema = meta?.querySchema?.properties?.[name] ?? {};
+    const required = meta?.querySchema?.required?.includes(name) ?? false;
+    // Un texto sin más información queda vacío si es opcional ("string" no ayuda a nadie).
+    const known = required || Object.keys(schema).some((key) => key !== 'type') || (schema.type !== undefined && schema.type !== 'string');
+    const example = known ? exampleFromSchema(schema, name) : undefined;
+    const value = example === undefined || example === null || typeof example === 'object' ? '' : String(example);
+    return required ? { name, value } : { name, value, disabled: true };
   });
 }

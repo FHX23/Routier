@@ -11,8 +11,8 @@ import { inferHeaders, inferQueryParams } from './request.js';
 import type { SourceLoader } from './source.js';
 import type { AuthDetector } from './auth.js';
 import { firstParamName, inferNodeBody, inferTrackedQuery, type RequestBodyInference } from './flow.js';
-import { applyBody } from './metadata.js';
-import { interpretSchema, interpretValidatorObject } from './schemas.js';
+import { applyBody, applyQuerySchema } from './metadata.js';
+import { interpretSchema, interpretValidatorObject, type ValidatorObject } from './schemas.js';
 
 const BODY_METHODS: HttpMethod[] = ['POST', 'PUT', 'PATCH'];
 
@@ -85,7 +85,7 @@ export async function resolveHandlerBody(expression: string, ctx: HandlerContext
  * Middlewares de validación: `validate(schema)`, `validate({ body, query })`, `celebrate({...})`,
  * `zValidator('json', schema)`. Soporta Zod, Joi, TypeBox y JSON Schema.
  */
-async function validatorFromCall(expression: string, ctx: HandlerContext): Promise<{ body?: JsonSchema; query?: string[] } | null> {
+async function validatorFromCall(expression: string, ctx: HandlerContext): Promise<ValidatorObject | null> {
   const call = /^[\w$.]+\s*\(([\s\S]*)\)$/.exec(expression.trim());
   if (!call) return null;
   for (const arg of splitTopLevel(call[1])) {
@@ -127,6 +127,7 @@ export async function inferHandlerMetadata(options: InferHandlerOptions): Promis
   const query: string[] = [];
   let auth = options.inheritedAuth;
   let validated: JsonSchema | undefined;
+  let querySchema: JsonSchema | undefined;
   let usage: RequestBodyInference | null = null;
   let files: Record<string, JsonSchema> | null = null;
 
@@ -147,10 +148,10 @@ export async function inferHandlerMetadata(options: InferHandlerOptions): Promis
     }
     if (isMiddleware) files ??= multerFields(handler);
 
-    if (isMiddleware && (!validated || query.length === 0)) {
+    if (isMiddleware && (!validated || !querySchema)) {
       const validator = await validatorFromCall(handler, options);
       if (validator?.body && isBodyMethod) validated ??= validator.body;
-      validator?.query?.forEach(addQuery);
+      querySchema ??= validator?.query;
     }
 
     const handlerBody = await resolveHandlerBody(handler, options);
@@ -184,6 +185,7 @@ export async function inferHandlerMetadata(options: InferHandlerOptions): Promis
   if (auth?.type === 'bearer' && !headers.includes('Authorization')) headers.unshift('Authorization');
   if (headers.length > 0) meta.headers = headers;
   if (query.length > 0) meta.query = query;
+  applyQuerySchema(meta, querySchema);
 
   if (isBodyMethod) {
     if (files) {

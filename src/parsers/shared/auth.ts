@@ -124,7 +124,7 @@ export class AuthDetector {
   }
 
   /** Librería de sesión usada directamente en `code` (sin seguir llamadas). */
-  private directLibrary(code: string, filePath: string, imports: ReturnType<typeof parseImports>): SessionLibrary | null {
+  private directLibrary(code: string, imports: ReturnType<typeof parseImports>): SessionLibrary | null {
     for (const [pattern, library] of SESSION_PATTERNS) {
       if (pattern.test(code)) return library;
     }
@@ -134,7 +134,6 @@ export class AuthDetector {
       // `const { auth } = NextAuth(config)` en el mismo archivo
       if (/\{\s*[^}]*\bauth\b[^}]*\}\s*=\s*NextAuth\s*\(/.test(code)) return 'next-auth';
     }
-    void filePath;
     return null;
   }
 
@@ -145,7 +144,7 @@ export class AuthDetector {
   async sessionLibrary(code: string, filePath: string, depth = 0): Promise<SessionLibrary | null> {
     const fileCode = (await this.loader.load(filePath)) ?? '';
     const imports = parseImports(fileCode);
-    const direct = this.directLibrary(code, filePath, imports);
+    const direct = this.directLibrary(code, imports);
     if (direct || depth >= 2) return direct;
 
     for (const match of code.matchAll(/(?<![\w$.])([\w$]+)\s*\(/g)) {

@@ -390,7 +390,7 @@ export async function interpretExpression(expression: string, ctx: Context): Pro
     current = await interpretBase(segments[index], next);
     index++;
   } else if (segments[0].args === null) {
-    const schema = await resolveSchemaByName(segments[0].name, ctx.filePath, ctx.loader, ctx.depth + 1);
+    const schema = await resolveSchemaByName(segments[0].name, ctx.filePath, ctx.loader);
     if (!schema) return null;
     current = { schema, optional: false };
     index = 1;
@@ -451,7 +451,7 @@ const schemaCache = new WeakMap<SourceLoader, Map<string, Promise<JsonSchema | n
  * Busca la declaración del schema `name` en `filePath` (o siguiendo sus imports /
  * re-exports) y la traduce a JSON Schema.
  */
-export function resolveSchemaByName(name: string, filePath: string, loader: SourceLoader, depth = 0): Promise<JsonSchema | null> {
+export function resolveSchemaByName(name: string, filePath: string, loader: SourceLoader): Promise<JsonSchema | null> {
   let cache = schemaCache.get(loader);
   if (!cache) {
     cache = new Map();
@@ -467,8 +467,7 @@ export function resolveSchemaByName(name: string, filePath: string, loader: Sour
     // Un schema con nombre se resuelve siempre desde profundidad 0: el resultado se cachea y no
     // debe depender del camino (más o menos profundo) por el que se llegó a él la primera vez.
     // Los ciclos los corta `inProgress`.
-    void depth;
-    cached = resolveUncached(name, filePath, loader, 0).finally(() => inProgress.delete(key));
+    cached = resolveUncached(name, filePath, loader).finally(() => inProgress.delete(key));
     cache.set(key, cached);
   }
   return cached;
@@ -476,11 +475,11 @@ export function resolveSchemaByName(name: string, filePath: string, loader: Sour
 
 const inProgress = new Set<string>();
 
-async function resolveUncached(name: string, filePath: string, loader: SourceLoader, depth: number): Promise<JsonSchema | null> {
-  if (depth > MAX_DEPTH || IGNORED_RECEIVERS.has(name)) return null;
+async function resolveUncached(name: string, filePath: string, loader: SourceLoader): Promise<JsonSchema | null> {
+  if (IGNORED_RECEIVERS.has(name)) return null;
   const code = await loader.load(filePath);
   if (code === null) return null;
-  const ctx: Context = { filePath, loader, depth };
+  const ctx: Context = { filePath, loader, depth: 0 };
 
   const escaped = name.replace(/\$/g, '\\$');
   const declaration = name === 'default'
@@ -496,7 +495,7 @@ async function resolveUncached(name: string, filePath: string, loader: SourceLoa
   const binding = imports.get(name);
   if (binding) {
     const target = loader.resolve(filePath, binding.specifier);
-    return target ? resolveSchemaByName(binding.imported, target, loader, depth + 1) : null;
+    return target ? resolveSchemaByName(binding.imported, target, loader) : null;
   }
 
   // Re-exports: `export { a as b } from './x'` y `export * from './x'`.
@@ -504,13 +503,13 @@ async function resolveUncached(name: string, filePath: string, loader: SourceLoa
     const target = loader.resolve(filePath, match[3]);
     if (!target) continue;
     if (match[1] === '*') {
-      const found = await resolveSchemaByName(name, target, loader, depth + 1);
+      const found = await resolveSchemaByName(name, target, loader);
       if (found) return found;
       continue;
     }
     for (const part of match[1].slice(1, -1).split(',')) {
       const [imported, local] = part.trim().split(/\s+as\s+/).map((s) => s.trim());
-      if ((local ?? imported) === name) return resolveSchemaByName(imported, target, loader, depth + 1);
+      if ((local ?? imported) === name) return resolveSchemaByName(imported, target, loader);
     }
   }
 

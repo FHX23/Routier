@@ -335,7 +335,7 @@ async function heritageSchema(heritage: string, ctx: TypeContext): Promise<JsonS
   const next = { ...ctx, depth: ctx.depth + 1 };
 
   if (helper === 'createZodDto') {
-    return resolveSchemaByName(args[0]?.trim() ?? '', ctx.filePath, ctx.loader, ctx.depth + 1);
+    return resolveSchemaByName(args[0]?.trim() ?? '', ctx.filePath, ctx.loader);
   }
   const base = args[0] ? await resolveTypeSchema(args[0].trim(), next) : null;
   if (!base) return null;
@@ -396,6 +396,26 @@ async function propertySchema(member: ClassMember, ctx: TypeContext): Promise<{ 
       if (enumSchema?.enum) schema = { ...schema, type: 'string', enum: enumSchema.enum };
     }
     if (decorator.name === 'IsArray' && schema.type !== 'array') schema = { type: 'array', items: schema.type ? schema : {} };
+  }
+
+  // Restricciones (`@Min(1)`, `@Length(3, 20)`, `@Matches(/^\d+$/)`): los ejemplos las respetan.
+  for (const decorator of member.decorators) {
+    const args = splitTopLevel(decorator.args).map((arg) => arg.trim());
+    const [first, second] = args.map((arg) => parseLiteralValue(arg));
+    const number = (value: unknown) => (typeof value === 'number' ? value : undefined);
+    const constraints: Partial<JsonSchema> = {
+      Min: { minimum: number(first) },
+      Max: { maximum: number(first) },
+      IsPositive: { minimum: schema.type === 'integer' ? 1 : 0.01 },
+      MinLength: { minLength: number(first) },
+      MaxLength: { maxLength: number(first) },
+      Length: { minLength: number(first), maxLength: number(second) },
+      ArrayMinSize: { minItems: number(first) },
+      Matches: { pattern: /^\/(.+)\/[a-z]*$/s.exec(args[0] ?? '')?.[1] },
+    }[decorator.name] ?? {};
+    for (const [key, value] of Object.entries(constraints)) {
+      if (value !== undefined) schema = { ...schema, [key]: value };
+    }
   }
 
   return { schema, optional };
@@ -488,7 +508,7 @@ export async function typeTextToSchema(typeText: string, ctx: TypeContext): Prom
   // z.infer<typeof schema> / z.input / z.output
   const zodInfer = /^(?:z|zod)\.(?:infer|input|output|TypeOf)\s*<\s*typeof\s+([\w$]+)\s*>$/.exec(text);
   if (zodInfer) {
-    const schema = await resolveSchemaByName(zodInfer[1], ctx.filePath, ctx.loader, ctx.depth + 1);
+    const schema = await resolveSchemaByName(zodInfer[1], ctx.filePath, ctx.loader);
     return finish(schema ?? {});
   }
 
@@ -541,7 +561,7 @@ export async function typeTextToSchema(typeText: string, ctx: TypeContext): Prom
 export async function resolveTypeSchema(name: string, ctx: TypeContext): Promise<JsonSchema | null> {
   if (!name || ctx.depth > MAX_DEPTH) return null;
   const found = await locate(name, ctx);
-  if (!found) return resolveSchemaByName(name, ctx.filePath, ctx.loader, ctx.depth);
+  if (!found) return resolveSchemaByName(name, ctx.filePath, ctx.loader);
   const local = { ...ctx, filePath: found.filePath };
   const escaped = found.name.replace(/\$/g, '\\$');
 
